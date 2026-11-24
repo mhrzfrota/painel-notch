@@ -362,3 +362,149 @@ n = coleta.detalhe(dict(base, rede={'tipo': 'Wi-Fi', 'if': 'en1', 'ip': '192.168
 assert n == {'tipo': 'Wi-Fi', 'ip': '192.168.1.130', 'down': 600945, 'up': 294775, 'link': None, 'wifi': w, 'iface': 'en1'}, n
 assert coleta.detalhe(base, '100.1.2.3', None)['net'] is None
 print('ok rede')
+
+# Blocos MF, com serviços e credenciais locais fictícios.
+from datetime import date, timedelta
+from pathlib import Path
+from unittest.mock import patch
+import subprocess
+import json
+import urllib.parse
+
+
+class ApiMF(http.server.BaseHTTPRequestHandler):
+    campanhas = []
+    falha = False
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        caminho = urllib.parse.urlsplit(self.path).path
+        if caminho in ('/redirect', '/ok', '/fora'):
+            assert self.headers.get('User-Agent') == 'painel-notch/1.0'
+        if caminho == '/redirect':
+            self.send_response(302)
+            self.send_header('Location', '/ok')
+            self.end_headers()
+            return
+        dados = {}
+        status = 200
+        if caminho == '/fora':
+            status = 503
+        elif caminho != '/ok':
+            assert self.headers.get('Authorization') == 'Bearer chave'
+            if caminho.endswith('/insights'):
+                dados = {'data': [{'spend': '12.34', 'actions': [
+                    {'action_type': 'onsite_conversion.messaging_conversation_started_7d', 'value': '2'}]}]}
+            elif caminho.endswith('/campaigns'):
+                dados = {'data': self.campanhas}
+            elif caminho == '/deploy':
+                dados = {'deployments': [{'state': 'ERROR'}]}
+            if self.falha:
+                status, dados = 400, {'error': {'message': 'recusado chave'}}
+        self.send_response(status)
+        self.end_headers()
+        self.wfile.write(json.dumps(dados).encode())
+
+
+with http.server.HTTPServer(('127.0.0.1', 0), ApiMF) as servidor:
+    _th.Thread(target=servidor.serve_forever, daemon=True).start()
+    origem = f'http://127.0.0.1:{servidor.server_port}'
+    try:
+        with patch.object(agentes, 'segredo', return_value='chave'), patch.object(agentes, 'VERCEL', origem + '/deploy'):
+            cfg = {'sites': [dict(nome='A', url=origem + '/redirect'), dict(nome='B', url=origem + '/fora')],
+                   'vercelProjetos': {'A': 'prj_1'}}
+            r = agentes.sites(cfg, agora)
+            assert [x['nivel'] for x in r['canais']] == [0, 2]
+            assert r['nivel'] == 2 and r['problemas'] == [dict(nivel=2, titulo='deploy com erro: A')]
+            assert agentes.sites(cfg, agora + 299) == r
+        print('ok sites')
+        with patch.object(agentes, 'META', origem), patch.object(agentes, 'segredo', return_value='chave') as chave:
+            cfg = dict(conta='act_1', cplMax=5)
+            r = agentes.metaads(cfg, agora)
+            assert [x['estado'] for x in r['canais']] == ['R$ 12,34', '2', '0']
+            assert [x['nivel'] for x in r['problemas']] == [2, 1]
+            ApiMF.campanhas = [{'id': '1'}]
+            assert agentes.metaads(cfg, agora + 599) == r
+            assert agentes.metaads(cfg, agora + 600)['nivel'] == 1
+            ApiMF.falha = True
+            r = agentes.metaads(cfg, agora + 1200)
+            assert r['nivel'] == 1 and 'recusado' in str(r) and 'chave' not in str(r)
+            chave.return_value = None
+            assert agentes.metaads(cfg, agora + 1800)['nivel'] == -1
+        print('ok metaads')
+    finally:
+        servidor.shutdown()
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    pasta = Path(tmp)
+
+    def comando(repo, *args):
+        subprocess.run(['git', '-c', 'user.name=Teste', '-c', 'user.email=teste@example.org',
+                        '-c', 'commit.gpgsign=false', '-C', str(repo), *args], capture_output=True, check=True)
+
+    remoto = pasta / 'remoto.git'
+    comando(pasta, 'init', '--bare', str(remoto))
+    for nome in ('limpo', 'alterado', 'pendente'):
+        repo = pasta / nome
+        comando(pasta, 'init', '-b', 'main', str(repo))
+        arq = repo / 'um arquivo'
+        arq.write_text('1')
+        comando(repo, 'add', '.')
+        comando(repo, 'commit', '-m', 'inicial')
+        if nome == 'alterado':
+            arq.write_text('nova versão')
+            os.utime(arq, (agora - 3 * 86400,) * 2)
+        if nome == 'pendente':
+            comando(repo, 'push', '--set-upstream', str(remoto), 'main')
+            comando(repo, 'remote', 'add', 'origin', str(remoto))
+            comando(repo, 'fetch', 'origin')
+            comando(repo, 'branch', '--set-upstream-to=origin/main')
+            comando(repo, 'commit', '--allow-empty', '-m', 'local')
+    r = agentes.git(dict(pasta=tmp), agora)
+    assert r['estado'] == '2 repos pendentes' and r['nivel'] == 1
+    assert [p['titulo'] for p in r['problemas']] == ['alterado: alterações sem commit há 3 dias', 'pendente: 1 commits sem push']
+print('ok git')
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    arq = Path(tmp) / 'foco.md'
+    cfg = dict(arquivo=str(arq))
+    agora = time.time()
+    for idade in (0, 8):
+        arq.write_text(f'**Semana de:** {date.today() - timedelta(days=idade)}\n## Prioridades\n1. Um\n2. Dois\n3. Três\n4. Quatro\n')
+        r = agentes.foco(cfg, agora + idade * 60)
+        assert r['nivel'] == int(idade > 7)
+        assert [p['titulo'] for p in r['problemas'] if not p['nivel']] == ['Um', 'Dois', 'Três']
+    assert agentes.foco(dict(arquivo=str(arq) + '.ausente'), agora)['nivel'] == -1
+print('ok foco')
+
+# Exercita a leitura e a gravação reais do app sem abrir a interface nem tocar na configuração do usuário.
+import sys
+if sys.platform == 'darwin':
+    fontes = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as tmp:
+        pasta = Path(tmp)
+        arquivo = pasta / 'config.json'
+        entrada = json.loads((fontes / 'docs/config-mf-exemplo.json').read_text())
+        entrada['agentes'].append({'id': 'antigo', 'tipo': 'generico', 'url': 'https://example.com'})
+        arquivo.write_text(json.dumps(entrada))
+        swift = (fontes / 'Ajustes.swift').read_text().split('enum Py {', 1)[0]
+        (pasta / 'main.swift').write_text(swift + """
+let store = ConfigStore()
+precondition(store.existe)
+store.c.intervalo += 1
+store.gravar()
+""")
+        subprocess.run(['swift', str(pasta / 'main.swift')], check=True,
+                       env=dict(os.environ, FROTA_CONFIG=str(arquivo)))
+        salvo = json.loads(arquivo.read_text())
+        assert salvo['intervalo'] == 21
+        assert len(salvo['agentes']) == len(entrada['agentes'])
+        for antes, depois in zip(entrada['agentes'], salvo['agentes']):
+            assert all(depois[chave] == valor for chave, valor in antes.items())
+            assert ('cplMax' in depois) == ('cplMax' in antes)
+        assert salvo['agentes'][-1]['sites'] == [] and salvo['agentes'][-1]['dias'] == 1
+    print('ok persistência Swift (config antiga e quatro adaptadores)')

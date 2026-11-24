@@ -11,7 +11,10 @@ Opcional em qualquer tipo: instâncias de WhatsApp na UAZAPI (`uazapiURL` + `ins
 (conta "uazapi:<host>"). Saída de cada um: estado, nivel, canais, problemas, erro, atividade e o que o tipo souber a mais."""
 import glob, json, os, re, sqlite3, time, urllib.error, urllib.parse, urllib.request
 
-from comum import ACHADO, N_, _iso, _json, _json_m, _limpa, _novas, dur, quando, segredo, servicos, t
+from datetime import date
+from pathlib import Path
+
+from comum import run, ACHADO, N_, _iso, _json, _json_m, _limpa, _novas, dur, quando, segredo, servicos, t
 
 UAZ = {}  # url → (quando, dado): a UAZAPI é consultada a cada 5 min, não a cada ciclo
 
@@ -229,7 +232,198 @@ def generico(a, agora):
             'atividade': dict(quando(at, agora), canal=None, tipo='log') if at else None}
 
 
-TIPOS = {'hermes': hermes, 'openclaw': openclaw, 'generico': generico}
+def cacheado(segundos):
+    def decorar(ler):
+        cache = {}
+
+        def consultar(a, agora):
+            chave = json.dumps(a, sort_keys=True)
+            if chave not in cache or not 0 <= agora - cache[chave][0] < segundos:
+                cache[chave] = (agora, ler(a, agora))
+            return cache[chave][1]
+        return consultar
+    return decorar
+
+
+def cartao(canais=(), problemas=(), estado=None, nivel=None, atividade=None):
+    if nivel is None:
+        nivel = max((item['nivel'] for item in (*canais, *problemas)), default=0)
+    return dict(canais=list(canais), problemas=list(problemas), estado=estado or t('pede atenção' if nivel else 'no ar'),
+                nivel=nivel, atividade=atividade, erro=None)
+
+
+VERCEL = 'https://api.vercel.com/v6/deployments'
+META = 'https://graph.facebook.com'
+
+
+class SemRedirecionamento(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None  # Authorization só pode chegar ao endpoint original.
+
+
+def api(url, parametros, token):
+    req = urllib.request.Request(url + '?' + urllib.parse.urlencode(parametros),
+                                 headers={'Authorization': 'Bearer ' + token})
+    try:
+        with urllib.request.build_opener(SemRedirecionamento).open(req, timeout=8) as resposta:
+            dados = json.load(resposta)
+    except urllib.error.HTTPError as erro:
+        with erro:
+            try:
+                dados = json.load(erro)
+            except ValueError:
+                raise ValueError('HTTP ' + str(erro.code)) from None
+        if not isinstance(dados, dict) or not dados.get('error'):
+            raise ValueError('HTTP ' + str(erro.code))
+    if dados.get('error'):
+        mensagem = dados['error'].get('message') or t('pede atenção')
+        raise ValueError(_limpa(' '.join(mensagem.replace(token, '…').split())))
+    return dados
+
+
+@cacheado(300)
+def sites(a, agora):
+    canais, problemas = [], []
+    projetos = a.get('vercelProjetos') or {}
+    token = segredo('vercel') if projetos else None
+    for site in a.get('sites', []):
+        nome, url = site['nome'], site['url']
+        inicio = time.monotonic()
+        try:
+            if urllib.parse.urlsplit(url).scheme not in ('http', 'https'):
+                raise ValueError()
+            req = urllib.request.Request(url, headers={'User-Agent': 'painel-notch/1.0'})
+            with urllib.request.urlopen(req, timeout=8) as resposta:
+                lento = time.monotonic() - inicio > 3
+                nivel = int(lento) if 200 <= resposta.status < 300 else 2
+        except (OSError, ValueError):
+            nivel = 2
+        canais.append(dict(nome=nome, estado=t(('no ar', N_('lento'), 'fora do ar')[nivel]), nivel=nivel))
+        if token and projetos.get(nome):
+            try:
+                lista = api(VERCEL, dict(projectId=projetos[nome], limit=1), token)['deployments']
+                if lista and lista[0].get('state', lista[0].get('readyState')) in ('ERROR', 'CANCELED'):
+                    problemas.append(dict(titulo=t('deploy com erro: {0}', nome), nivel=2))
+            except (OSError, ValueError, KeyError):
+                problemas.append(dict(titulo=t('falha ao consultar deploy: {0}', nome), nivel=1))
+    return cartao(canais, problemas, atividade=dict(quando(agora, agora), tipo=t('última checagem'), canal=None))
+
+
+@cacheado(600)
+def metaads(a, agora):
+    conta = a.get('conta', '')
+    token = segredo('meta:' + conta) if conta else None
+    if not token:
+        return cartao(estado=t('sem acesso'), nivel=-1)
+    base = '/'.join((META, urllib.parse.quote(a.get('versao') or 'v21.0', safe=''), urllib.parse.quote(conta, safe='')))
+    try:
+        linhas = api(base + '/insights', dict(date_preset='today', fields='spend,actions'), token)['data']
+        gasto = sum(float(x.get('spend', 0)) for x in linhas)
+        conversas = sum(int(y['value']) for x in linhas for y in x.get('actions', [])
+                        if y['action_type'] == 'onsite_conversion.messaging_conversation_started_7d')
+        params = dict(effective_status='["ACTIVE"]', fields='id', limit=100)
+        campanhas = 0
+        while True:
+            pagina = api(base + '/campaigns', params, token)
+            campanhas += len(pagina['data'])
+            paging = pagina.get('paging', {})
+            if not paging.get('next'):
+                break
+            cursor = paging['cursors']['after']
+            if cursor == params.get('after'):
+                raise ValueError(t('pede atenção'))
+            params['after'] = cursor
+    except (OSError, ValueError, KeyError, TypeError) as erro:
+        msg = str(erro) if type(erro) is ValueError else type(erro).__name__
+        return cartao(problemas=[dict(titulo=_limpa(msg.replace(token, '…')), nivel=1)])
+    canais = [dict(nome=t('Gasto hoje'), estado='R$ ' + f'{gasto:.2f}'.replace('.', ','), nivel=0),
+              dict(nome=t('Conversas'), estado=str(conversas), nivel=0),
+              dict(nome=t('Campanhas no ar'), estado=str(campanhas), nivel=0)]
+    problemas = []
+    if not campanhas:
+        problemas.append(dict(titulo=t('nenhuma campanha no ar'), nivel=2))
+    if conversas and a.get('cplMax') is not None and gasto / conversas > a['cplMax']:
+        problemas.append(dict(titulo=t('custo por conversa acima do limite'), nivel=1))
+    return cartao(canais, problemas)
+
+
+@cacheado(120)
+def git(a, agora):
+    pasta = Path(_x(a.get('pasta') or '~/Desktop/projects'))
+    if not pasta.is_dir():
+        return cartao(estado=t('sem acesso'), nivel=-1)
+    alertas, pendentes = [], set()
+    for repo in sorted(pasta.iterdir()):
+        if not (repo / '.git').exists():
+            continue
+        cmd = ['git', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', str(repo)]
+        rc, saida, _ = run(cmd + ['status', '--porcelain', '-z', '-uall', '--no-renames'], timeout=8)
+        if rc:
+            alertas.append((agora, t('{0}: falha ao ler status', repo.name)))
+            pendentes.add(repo)
+            continue
+        datas = []
+        for item in filter(None, saida.split('\0')):
+            caminho = repo / item[3:]
+            try:
+                datas.append(caminho.lstat().st_mtime)
+            except FileNotFoundError:
+                while not caminho.exists() and caminho != repo:
+                    caminho = caminho.parent
+                datas.append(caminho.stat().st_mtime)
+        if datas and agora - max(datas) > float(a.get('dias', 1)) * 86400:
+            dias = int((agora - max(datas)) // 86400)
+            alertas.append((max(datas), t('{0}: alterações sem commit há {1} dias', repo.name, dias)))
+            pendentes.add(repo)
+        rc, valor, _ = run(cmd + ['rev-list', '--count', '@{u}..HEAD'], timeout=8)
+        if not rc and int(valor):
+            _, datas_commit, _ = run(cmd + ['log', '--format=%ct', '@{u}..HEAD'], timeout=8)
+            mais_antigo = min(map(int, datas_commit.split()), default=agora)
+            alertas.append((mais_antigo, t('{0}: {1} commits sem push', repo.name, valor.strip())))
+            pendentes.add(repo)
+    return cartao(estado=t('{0} repos pendentes', len(pendentes)) if pendentes else t('tudo salvo'),
+                  problemas=[dict(titulo=msg, nivel=1) for _, msg in sorted(alertas)[:8]])
+
+
+@cacheado(60)
+def foco(a, agora):
+    try:
+        linhas = Path(_x(a.get('arquivo') or '')).read_text(encoding='utf-8').splitlines()
+        texto = '\n'.join(linhas).replace('**', '').replace('__', '')
+        semana = date.fromisoformat(re.search(r'(?im)^\s*(?:#+\s*)?Semana de:\s*(\d{4}-\d\d-\d\d)', texto)[1])
+    except (OSError, TypeError, ValueError):
+        return cartao(estado=t('sem acesso'), nivel=-1)
+    problemas = []
+    if (date.fromtimestamp(agora) - semana).days > 7:
+        problemas.append(dict(titulo=t('foco vencido, rode o /revisar'), nivel=1))
+    secao, prioridades = 0, []
+    for linha in linhas:
+        titulo = re.match(r'^\s*(#{1,6})\s+(.+)', linha)
+        destaque = re.match(r'^\s*\*\*(Prioridade\s+\d+\b.*?)\*\*', linha, re.I)
+        if destaque:
+            prioridades.append(destaque[1])
+        elif titulo:
+            if 'prioridade' in titulo[2].lower():
+                secao = len(titulo[1])
+                if re.search(r'\bprioridade\s+\d+', titulo[2], re.I):
+                    prioridades.append(titulo[2])
+            elif secao and len(titulo[1]) > secao:
+                prioridades.append(titulo[2])
+            else:
+                secao = 0
+        elif secao:
+            item = re.match(r'^\s*\d+[.)]\s+(.+)', linha)
+            if item:
+                prioridades.append(item[1])
+        if len(prioridades) == 3:
+            break
+    # links de wiki ([[Nota]] ou [[Nota|apelido]]) viram só o texto
+    prioridades = [re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]*)\]\]', r'\1', p) for p in prioridades]
+    problemas.extend(dict(titulo=_limpa(p.strip('* '), 60), nivel=0) for p in prioridades)
+    return cartao(problemas=problemas)
+
+
+TIPOS = {'sites': sites, 'metaads': metaads, 'git': git, 'foco': foco, 'hermes': hermes, 'openclaw': openclaw, 'generico': generico}
 
 
 def estado(lista, agora=None):

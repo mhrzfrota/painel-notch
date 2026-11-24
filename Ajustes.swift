@@ -33,8 +33,12 @@ struct CEmail: Codable, Equatable { var intervalo = 60, contas: [CEmailConta] = 
 struct CIA: Codable, Identifiable, Equatable {
     var id = UUID().uuidString, nome = "", ferramenta = "Claude", fonte = "", perfil = "", app: [String] = [], perguntar = "", modelo = "", visivel = true
 }
+struct CSite: Codable, Equatable { var nome: String, url: String }
 struct CAgente: Codable, Identifiable, Equatable {
     var id = UUID().uuidString, nome = "", tipo = "hermes", home = "", perfil = "", rotulo = "", porta = 0, url = "", log = "", foto = ""
+    var sites: [CSite] = [], vercelProjetos: [String: String] = [:]
+    var conta = "", versao = "", cplMax: Double? = nil
+    var pasta = "", dias: Double = 1, arquivo = ""
     var uazapiURL = "", instancias: [String: String] = [:], visivel = true
 }
 struct CSinc: Codable, Equatable { var agentes = "backup" }
@@ -719,6 +723,42 @@ func guardarFoto(_ url: URL, id: String, pasta: String = "fotos") -> String? {
     return rel
 }
 
+private struct CamposSites: View {
+    @Binding var agente: CAgente
+    @State private var linhas: String
+    @State private var projetos: String
+
+    init(agente: Binding<CAgente>) {
+        _agente = agente
+        let g = agente.wrappedValue
+        _linhas = State(initialValue: g.sites.map { "\($0.nome) | \($0.url)" }.joined(separator: "\n"))
+        _projetos = State(initialValue: g.vercelProjetos.sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }.joined(separator: ", "))
+    }
+
+    var body: some View {
+        TextField(t("Sites (um por linha)"), text: $linhas, prompt: Text(verbatim: "Nome | https://example.com"), axis: .vertical)
+            .onChange(of: linhas) { _, texto in
+                agente.sites = texto.split(separator: "\n").compactMap { linha in
+                    let par = linha.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    guard par.count == 2, !par[0].isEmpty, let url = URLComponents(string: par[1]),
+                          ["http", "https"].contains(url.scheme?.lowercased() ?? ""), !(url.host ?? "").isEmpty
+                    else { return nil }
+                    return CSite(nome: par[0], url: par[1])
+                }
+            }
+        TextField(t("Projetos da Vercel"), text: $projetos, prompt: Text(verbatim: "Nome=prj_…"))
+            .onChange(of: projetos) { _, texto in
+                var mapa: [String: String] = [:]
+                for entrada in texto.split(separator: ",") {
+                    let par = entrada.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    if par.count == 2, !par[0].isEmpty, !par[1].isEmpty { mapa[par[0]] = par[1] }
+                }
+                agente.vercelProjetos = mapa
+            }
+    }
+}
+
 struct AbaAgentes: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject var a: EstadoAjustes
@@ -728,7 +768,8 @@ struct AbaAgentes: View {
                 FotoAgente(caminho: ConfigStore.foto(g), nome: g.nome, tamanho: 24)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(g.nome.isEmpty ? t("Sem nome") : g.nome)
-                    Text(["hermes": "Hermes", "openclaw": "OpenClaw", "generico": t("Genérico")][g.tipo] ?? g.tipo).font(.caption).foregroundStyle(.secondary)
+                    Text(["hermes": "Hermes", "openclaw": "OpenClaw", "generico": t("Genérico"),
+                          "sites": t("Sites"), "metaads": "Meta Ads", "git": "Git", "foco": t("Foco")][g.tipo] ?? g.tipo).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if !g.visivel { Image(systemName: "eye.slash").foregroundStyle(.secondary) }
@@ -760,6 +801,10 @@ struct AbaAgentes: View {
                     TextField(t("Nome"), text: $g.nome)
                     Picker(t("Tipo"), selection: $g.tipo) {
                         Text("Hermes").tag("hermes"); Text("OpenClaw").tag("openclaw"); Text(t("Genérico")).tag("generico")
+                        Text(t("Sites")).tag("sites")
+                        Text(verbatim: "Meta Ads").tag("metaads")
+                        Text(verbatim: "Git").tag("git")
+                        Text(t("Foco")).tag("foco")
                     }
                     Toggle(t("Mostrar na ilha"), isOn: $g.visivel)
                 }
@@ -780,25 +825,43 @@ struct AbaAgentes: View {
                         TextField("LaunchAgent", text: $g.rotulo, prompt: Text(verbatim: "ai.openclaw.gateway"))
                         TextField(t("Pasta de estado"), text: $g.home, prompt: Text(verbatim: "~/.openclaw"))
                         TextField(t("Log"), text: $g.log, prompt: Text(verbatim: "~/Library/Logs/openclaw/gateway.log"))
+                    case "sites":
+                        CamposSites(agente: $g).id(g.id)
+                        CampoSegredo(conta: "vercel", titulo: t("Token da Vercel"), dica: t("token da conta"), a: a)
+                    case "metaads":
+                        TextField(t("Conta"), text: $g.conta, prompt: Text(verbatim: "act_123456789"))
+                        TextField(t("Versão da API"), text: $g.versao, prompt: Text(verbatim: "v21.0"))
+                        TextField(t("Custo por conversa máximo"), value: $g.cplMax, format: .number)
+                        if !g.conta.isEmpty {
+                            CampoSegredo(conta: "meta:\(g.conta)", titulo: t("Token da Meta"), dica: t("token da conta"), a: a)
+                                .id(g.conta)
+                        }
+                    case "git":
+                        TextField(t("Pasta dos repositórios"), text: $g.pasta, prompt: Text(verbatim: "~/Desktop/projects"))
+                        TextField(t("Dias"), value: $g.dias, format: .number)
+                    case "foco":
+                        TextField(t("Arquivo de foco"), text: $g.arquivo, prompt: Text(verbatim: "~/Documents/Vault/foco-da-semana.md"))
                     default:
                         TextField(t("URL de health"), text: $g.url, prompt: Text(verbatim: "http://127.0.0.1:8080/health"))
                         TextField("LaunchAgent", text: $g.rotulo, prompt: Text(t("com.exemplo.agente")))
                         TextField(t("Log"), text: $g.log, prompt: Text(t("~/Library/Logs/agente.log")))
                     }
                 }
-                Section {
-                    TextField(t("URL da UAZAPI"), text: $g.uazapiURL, prompt: Text(t("https://suaconta.uazapi.com")))
-                    TextField(t("Instâncias"), text: Binding(get: { g.instancias.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", ") },
-                                                          set: { t in g.instancias = Dictionary(t.split(separator: ",").compactMap { par -> (String, String)? in
-                                                              let p = par.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-                                                              return p.count == 2 && !p[0].isEmpty ? (p[0], p[1]) : nil
-                                                          }, uniquingKeysWith: { $1 }) }),
-                              prompt: Text(t("nome-da-instancia=Rótulo, …")))
-                    if let host = URL(string: g.uazapiURL)?.host, !host.isEmpty {
-                        CampoSegredo(conta: "uazapi:\(host)", titulo: "Admintoken", dica: t("token da conta"), a: a)
+                if !["sites", "metaads", "git", "foco"].contains(g.tipo) {
+                    Section {
+                        TextField(t("URL da UAZAPI"), text: $g.uazapiURL, prompt: Text(t("https://suaconta.uazapi.com")))
+                        TextField(t("Instâncias"), text: Binding(get: { g.instancias.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", ") },
+                                                              set: { t in g.instancias = Dictionary(t.split(separator: ",").compactMap { par -> (String, String)? in
+                                                                  let p = par.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                                                                  return p.count == 2 && !p[0].isEmpty ? (p[0], p[1]) : nil
+                                                              }, uniquingKeysWith: { $1 }) }),
+                                  prompt: Text(t("nome-da-instancia=Rótulo, …")))
+                        if let host = URL(string: g.uazapiURL)?.host, !host.isEmpty {
+                            CampoSegredo(conta: "uazapi:\(host)", titulo: "Admintoken", dica: t("token da conta"), a: a)
+                        }
+                    } header: { Text(t("WhatsApp na UAZAPI (opcional)")) } footer: {
+                        Text(t("Só leitura: o app vê se o agente está no ar, os canais e o último erro. Nunca reinicia nem manda mensagem.")).font(.caption).foregroundStyle(.secondary)
                     }
-                } header: { Text(t("WhatsApp na UAZAPI (opcional)")) } footer: {
-                    Text(t("Só leitura: o app vê se o agente está no ar, os canais e o último erro. Nunca reinicia nem manda mensagem.")).font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
                     Button(t("Testar")) {

@@ -25,6 +25,20 @@ Native macOS. Read-only. No server, no account, nothing installed on the machine
 
 </div>
 
+> **Painel Notch** is [Matheus Frota](https://github.com/mhrzfrota)'s fork of [FleetNotch](https://github.com/bisnishub/fleetnotch) by
+> [Edu Cavalcanti](https://www.instagram.com/eduardocavalcanti/), for people who run their work from **one Mac**. On top of everything
+> FleetNotch does, it adds four read-only cards (Settings › Agents › Type):
+>
+> | Type | What it watches | Turns amber / red when |
+> |---|---|---|
+> | `sites` | your websites (and, optionally, the last Vercel deploy of each) | a site is slow / down or a deploy failed |
+> | `metaads` | today's spend, conversations and active campaigns of a Meta ad account | cost per conversation above your limit / no campaign running |
+> | `git` | every repo in a folder: uncommitted changes and unpushed commits | work left unsaved for more than N days |
+> | `foco` | the weekly-focus note of your notes vault (`Semana de: YYYY-MM-DD`) | the note is more than 7 days old |
+>
+> Tokens (Vercel, Meta) go to the Keychain from the Settings window, never to `config.json`. Example: [docs/config-mf-exemplo.json](docs/config-mf-exemplo.json),
+> details in [docs/agents.md](docs/agents.md). Install exactly like FleetNotch: `git clone https://github.com/mhrzfrota/painel-notch && cd painel-notch && ./install.sh`.
+
 ---
 
 Notch apps show your music. Monitoring apps show one Mac in a wall of graphs. FleetNotch answers the only question you

@@ -1,0 +1,18 @@
+{
+  "agentes": [
+    {
+      "id": "sites-mf", "tipo": "sites", "nome": "Sites",
+      "sites": [{"nome": "Exemplo", "url": "https://example.com"}],
+      "vercelProjetos": {"Exemplo": "prj_exemplo"}
+    },
+    {
+      "id": "anuncios-mf", "tipo": "metaads", "nome": "Anúncios",
+      "conta": "act_123456789", "versao": "v21.0", "cplMax": 12.5
+    },
+    {"id": "git-mf", "tipo": "git", "nome": "Git", "pasta": "~/Desktop/projects", "dias": 1},
+    {
+      "id": "foco-mf", "tipo": "foco", "nome": "Foco da semana",
+      "arquivo": "~/Documents/Vault/foco-da-semana.md"
+    }
+  ]
+}

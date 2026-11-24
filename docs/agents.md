@@ -49,3 +49,21 @@ file's modification time as last activity). Combine them as you like.
 2. Register it in `TIPOS`.
 3. Add a test with a fake folder or a fake local HTTP server in `teste_coleta.py` (see the OpenClaw test).
 4. Add the type to the picker in `Ajustes.swift` (`AbaAgentes`).
+
+## Sites (`sites`)
+
+Cada entrada de `sites` tem `nome` e `url`. A cada cinco minutos o coletor faz um GET com redirecionamento e timeout de oito segundos. Acima de três segundos o site fica amarelo. Falha de acesso fica vermelha. Para acompanhar o último deploy, associe o nome ao ID do projeto em `vercelProjetos` e guarde o token na conta `vercel` do Keychain.
+
+## Meta Ads (`metaads`)
+
+Informe `conta` com o prefixo `act_`. O token fica na conta `meta:<conta>` do Keychain. O cartão consulta gasto e conversas de hoje e conta as campanhas ativas a cada dez minutos. Nenhuma campanha ativa gera alerta crítico. O limite opcional `cplMax` compara o gasto dividido pelas conversas quando há pelo menos uma. A versão padrão da API é `v21.0`.
+
+## Git (`git`)
+
+A cada dois minutos examina os repositórios diretamente sob `pasta` (padrão `~/Desktop/projects`). Alerta quando a alteração mais recente passou de `dias` (padrão 1) ou há commits à frente do upstream local. A referência remota reflete a última sincronização feita pelo usuário. Mostra até oito pendências, das mais antigas às mais recentes.
+
+## Foco (`foco`)
+
+Em `arquivo`, informe o caminho do Markdown semanal. O cartão lê a data em “Semana de: AAAA-MM-DD” e até três prioridades em títulos ou lista numerada. Após sete dias alerta para rodar /revisar. A leitura tem cache de um minuto.
+
+[Exemplo de configuração com os quatro cartões](config-mf-exemplo.json)
