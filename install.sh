@@ -21,9 +21,9 @@ PL="$HOME/Library/LaunchAgents/$ROT.plist"
 launchctl bootout "gui/$(id -u)/$ROT" 2>/dev/null || true
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -swift-version 5 -parse-as-library FleetNotch.swift Ajustes.swift Assistente.swift -o "$APP/Contents/MacOS/FleetNotch"
+swiftc -O -swift-version 5 -parse-as-library FleetNotch.swift Ajustes.swift Assistente.swift Visual.swift -o "$APP/Contents/MacOS/FleetNotch"
 # a config do usuário mora fora do app: ~/Library/Application Support/FleetNotch/config.json (sem segredo; segredo no Keychain)
-cp coleta.py comum.py agentes.py caixas.py ajustes.py pergunta.py demo.py acoes.py sonda.py sonda_linux.sh "$APP/Contents/Resources/"
+cp coleta.py comum.py agentes.py caixas.py ajustes.py pergunta.py demo.py acoes.py modelos.py sonda.py sonda_linux.sh "$APP/Contents/Resources/"
 # idiomas: as tabelas (o app e o Python leem as mesmas) e um .lproj por idioma, que faz o macOS listar o app em
 # Ajustes do Sistema › Geral › Idioma e Região › Aplicativos; o pedido de Localização sai traduzido de cada tabela
 cp -R i18n "$APP/Contents/Resources/"
@@ -74,4 +74,30 @@ launchctl bootstrap "gui/$(id -u)" "$PL"
 # statusline opcional pro anel do Claude (só com Claude Code instalado; ligar no settings.json: README, "Claude ring")
 [ -d "$HOME/.claude" ] && cp statusline.py "$HOME/.claude/fleetnotch-statusline.py" && chmod +x "$HOME/.claude/fleetnotch-statusline.py"
 echo "ok: $APP running / rodando (LaunchAgent $ROT)"
+# o anel do Claude só enche com o statusline ligado no settings.json: se ainda não está, mostra a linha exata (já encadeada
+# com o statusline que a pessoa tiver). Só LÊ o settings.json; quem edita é a pessoa (o app não mexe na config de outro programa)
+[ -d "$HOME/.claude" ] && /usr/bin/python3 - "$HOME/.claude/settings.json" <<'PY'
+import json, shlex, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except FileNotFoundError:
+    d = {}
+except ValueError:
+    print(f'\nClaude ring / anel do Claude: {p} is not valid JSON / não é um JSON válido. See / veja README.md#claude-ring')
+    sys.exit()
+atual = ((d.get('statusLine') or {}) if isinstance(d, dict) else {}).get('command') or ''
+atual = atual.strip() if isinstance(atual, str) else ''
+if 'fleetnotch-statusline.py' in atual:
+    sys.exit()  # já ligado
+# o statusline.py repassa a entrada pros argumentos (sem shell): comando com pipe, ; ou && vai dentro de sh -c
+if atual and any(c in atual for c in '|;&<>`'):
+    atual = 'sh -c ' + shlex.quote(atual)
+novo = '~/.claude/fleetnotch-statusline.py' + (' ' + atual if atual else '')
+print('\nClaude ring / anel do Claude: one more step / falta um passo. In / no ' + p + ':')
+print('    "statusLine": ' + json.dumps({'type': 'command', 'command': novo}, ensure_ascii=False))
+if atual:
+    print('Your current statusline keeps working: it gets the same input. / Seu statusline atual continua igual: recebe a mesma entrada.')
+print('It saves only usage % and reset times. / Grava só % de uso e horário de reset. README.md#claude-ring')
+PY
 echo "uninstall / desinstalar: README.md#uninstall"

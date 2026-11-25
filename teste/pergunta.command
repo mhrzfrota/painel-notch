@@ -5,8 +5,8 @@ OUT=${OUT_DIR:-$(cat "$PWD/.saida" 2>/dev/null)}; OUT=${OUT:-$HOME/Library/Cache
 mkdir -p "$OUT"; cd "$OUT"
 ROT=$(sed -n "s/^ROT=//p" "$REPO/install.sh"); export PREFIXO=$ROT
 APP=$OUT/FleetNotchDemo.app
-swiftc -O -swift-version 5 -parse-as-library "$REPO/FleetNotch.swift" "$REPO/Ajustes.swift" "$REPO/Assistente.swift" -o "$APP/Contents/MacOS/FleetNotch" || exit 1
-cp "$REPO"/{coleta,comum,agentes,caixas,ajustes,pergunta,demo,acoes,sonda}.py "$REPO/sonda_linux.sh" "$APP/Contents/Resources/"
+swiftc -O -swift-version 5 -parse-as-library "$REPO/FleetNotch.swift" "$REPO/Ajustes.swift" "$REPO/Assistente.swift" "$REPO/Visual.swift" -o "$APP/Contents/MacOS/FleetNotch" || exit 1
+cp "$REPO"/{coleta,comum,agentes,caixas,ajustes,pergunta,demo,acoes,modelos,sonda}.py "$REPO/sonda_linux.sh" "$APP/Contents/Resources/"
 codesign -s - --force "$APP" 2>/dev/null
 launchctl bootout gui/$(id -u)/$ROT 2>/dev/null
 FROTA_CONFIG=$OUT/demo-config.json FROTA_DEMO=1 FROTA_FUNDO=1 "$APP/Contents/MacOS/FleetNotch" >/dev/null 2>&1 &

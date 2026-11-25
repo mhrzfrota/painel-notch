@@ -45,7 +45,31 @@ struct CSinc: Codable, Equatable { var agentes = "backup" }
 struct CModulos: Codable, Equatable {
     var macs = true, servidores = true, email = true, ia = true, agentes = true, sincronizacao = true, acoes = true, pergunta = true
     var orca = FileManager.default.fileExists(atPath: "/Applications/Orca.app")  // ligado só se o Orca estiver instalado
-    var ordem = ["topo", "macs", "servidores", "email", "orca", "sincronizacao", "pergunta"]
+    var copiados = false  // histórico do ⌘C: desligado até a pessoa ligar (assistente ou Ajustes › Copiados)
+    var ordem = ["topo", "macs", "servidores", "email", "orca", "sincronizacao", "pergunta", "copiados"]
+}
+/// Um anel (de fora, do meio ou de dentro): cor ou degradê (cor → cor2), espessura relativa, opacidade do trilho, brilho
+/// e ponta. É o que o editor dos Ajustes mexe; os presets são combinações prontas (Visual.swift, Presets).
+struct CAnel: Codable, Equatable { var cor = "#64D2FF", cor2 = "", espessura = 1.0, trilho = 0.16, brilho = 0.0, redonda = true }
+/// Estilo dos anéis: os três anéis do Mac e a cor dos anéis das contas de IA ("neutro", "marca" ou "destaque").
+struct CEstilo: Codable, Equatable, Identifiable {
+    var id = "classico", nome = "", aneis = [CAnel(cor: "#64D2FF"), CAnel(cor: "#A69CFF"), CAnel(cor: "#7DDBB8")], contas = "neutro"
+}
+/// Histórico do que se copia: só na memória, com limite e validade; nunca o que vem destes apps (bundle id).
+struct CCopiados: Codable, Equatable {
+    var limite = 20, expira = 86400
+    var excluidos = ["com.1password.1password", "com.agilebits.onepassword7", "com.apple.keychainaccess", "com.apple.Passwords", "com.bitwarden.desktop"]
+}
+/// Tudo que é gosto (Ajustes › Aparência e o assistente). Nada disso muda a coleta: mexer aqui não reinicia o coletor.
+struct CVisual: Codable, Equatable {
+    var modo = "full", destaque = "#64D2FF", densidade = "padrao", metricas = ["cpu", "gpu", "ram"], numeros = "compactos"
+    var notch = "completo", abrirNoHover = false, somAbrir = false, somAlerta = false, atalhoTecla = "ctrl-opt-space", atalhoAcao = "pergunta"
+    var estilo = CEstilo(), presets: [CEstilo] = [], copiados = CCopiados()
+}
+/// Preço por milhão de tokens (USD) de um modelo, pelo prefixo do id. Vazio na config = a tabela padrão do modelos.py.
+struct CPreco: Codable, Equatable, Identifiable {
+    var id = UUID().uuidString, modelo = ""
+    var entrada: Double? = nil, saida: Double? = nil, cacheLe: Double? = nil, cache5m: Double? = nil, cache1h: Double? = nil
 }
 struct CAparencia: Codable, Equatable {
     var ilha = true, todasTelas = false, corAtencao = "#FF9F0A", corCritico = "#FF453A", atalho = false
@@ -56,12 +80,14 @@ struct Config: Codable, Equatable {
     var maquinas: [CMaquina] = [], servidores: [CServidor] = [], email = CEmail(), ia: [CIA] = [], agentes: [CAgente] = []
     var aparelhos: [String: CAparelho] = [:]  // periféricos renomeados (o campo pode faltar: config antiga)
     var sincronizacao = CSinc(), modulos = CModulos(), aparencia = CAparencia(), demo = false
+    var visual = CVisual(), precos: [CPreco] = []
 
     /// Lê tolerando chave faltando (arquivo de versão velha ou editado à mão): mescla com os padrões antes de decodificar.
     static func ler(_ d: Data) -> Config? {
         guard let arq = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
         func dic<T: Encodable>(_ v: T) -> [String: Any] { (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(v))) as? [String: Any] ?? [:] }
-        let elementos = ["maquinas": dic(CMaquina()), "servidores": dic(CServidor()), "ia": dic(CIA()), "agentes": dic(CAgente()), "email.contas": dic(CEmailConta())]
+        let elementos = ["maquinas": dic(CMaquina()), "servidores": dic(CServidor()), "ia": dic(CIA()), "agentes": dic(CAgente()), "email.contas": dic(CEmailConta()),
+                         "precos": dic(CPreco()), "visual.presets": dic(CEstilo()), "visual.estilo.aneis": dic(CAnel()), "aneis": dic(CAnel())]
         func mesclar(_ p: [String: Any], _ a: [String: Any], _ caminho: String) -> [String: Any] {
             var r = p
             for (k, v) in a {
@@ -82,6 +108,10 @@ struct Config: Codable, Equatable {
             }
         }
         unicos(&c.maquinas, \.id); unicos(&c.servidores, \.id); unicos(&c.ia, \.id); unicos(&c.agentes, \.id); unicos(&c.email.contas, \.id)
+        unicos(&c.precos, \.id)
+        // bloco novo da gaveta (config de versão anterior não tem): entra no fim da ordem, desligado ou não conforme o módulo
+        for b in CModulos().ordem where !c.modulos.ordem.contains(b) { c.modulos.ordem.append(b) }
+        while c.visual.estilo.aneis.count < 3 { c.visual.estilo.aneis.append(CAnel()) }
         return c
     }
 }
@@ -231,8 +261,9 @@ struct AjustesView: View {
             AbaEmail(store: store, a: a).tabItem { Label(t("E-mail"), systemImage: "envelope") }.tag("email")
             AbaIA(store: store, a: a).tabItem { Label(t("IA"), systemImage: "sparkles") }.tag("ia")
             AbaAgentes(store: store, a: a).tabItem { Label(t("Agentes"), systemImage: "person.2.wave.2") }.tag("agentes")
+            AbaCopiados(store: store, copiados: modelo.copiados).tabItem { Label(t("Copiados"), systemImage: "doc.on.clipboard") }.tag("copiados")
         }
-        .frame(width: 700, height: 520)
+        .frame(width: 780, height: 580)
         .onAppear {
             a.carregar()
             NSApp.activate(ignoringOtherApps: true)  // app de barra: sem isso a janela abre atrás do app da frente
@@ -243,7 +274,7 @@ struct AjustesView: View {
 /// Rótulos dos blocos da gaveta (a ordem mora em modulos.ordem).
 var nomesBlocos: [String: String] {
     ["topo": t("Agentes e contas de IA"), "macs": t("Macs (mostrador e conectados)"), "servidores": t("Servidores"),
-     "email": t("E-mail"), "orca": "Orca", "sincronizacao": t("Sincronização"), "pergunta": t("Pergunta rápida")]
+     "email": t("E-mail"), "orca": "Orca", "sincronizacao": t("Sincronização"), "pergunta": t("Pergunta rápida"), "copiados": t("Copiados (⌘C)")]
 }
 
 struct AbaGeral: View {
@@ -268,6 +299,7 @@ struct AbaGeral: View {
                     Toggle("Orca", isOn: $store.c.modulos.orca)
                     Toggle(t("Pergunta rápida"), isOn: $store.c.modulos.pergunta)
                     Toggle(t("Ações nos Macs"), isOn: $store.c.modulos.acoes)
+                    Toggle(t("Copiados (histórico do ⌘C)"), isOn: $store.c.modulos.copiados)
                 }
                 Section(t("Coleta")) {
                     Picker(t("Atualizar a cada"), selection: $store.c.intervalo) {
@@ -275,7 +307,9 @@ struct AbaGeral: View {
                     }
                     TextField(t("Painel externo (opcional)"), text: $store.c.painel, prompt: Text(verbatim: "http://…"))
                     Toggle(t("Dados de demonstração"), isOn: $store.c.demo)
-                    Toggle(t("Atalho global ⌃⌥Espaço para perguntar"), isOn: $store.c.aparencia.atalho)
+                }
+                Section(t("Atalho")) {
+                    OpcoesAtalho(ligado: $store.c.aparencia.atalho, v: $store.c.visual)
                 }
                 Section {
                     Button(t("Abrir o assistente de configuração…"), action: assistente)
@@ -301,6 +335,19 @@ struct AbaAparencia: View {
     @AppStorage("barraTexto") private var barraTexto = "auto"
     var body: some View {
         Form {
+            Section(t("Modo")) {
+                SeletorModo(modo: $store.c.visual.modo, estilo: store.c.visual.estilo)
+            }
+            Section {
+                GaleriaPresets(v: $store.c.visual, colunas: 8)
+                EditorAneis(v: $store.c.visual)
+            } header: { Text(t("Estilo dos anéis")) } footer: {
+                Text(t("Âmbar e vermelho continuam valendo por cima de qualquer estilo: o que pede atenção nunca se perde na cor."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section(t("Do seu jeito")) {
+                OpcoesVisuais(v: $store.c.visual)
+            }
             Section {
                 Picker(t("Na barra de menus"), selection: $barraTexto) {
                     Text(t("Automático")).tag("auto")
@@ -332,6 +379,16 @@ struct AbaAparencia: View {
                 limite(t("Temperatura acima de"), "temp", " °C")
                 limite(t("Disco com menos de"), "disco", t("% livre"))
                 limite(t("Conta de IA acima de"), "ia", "%")
+            }
+            Section {
+                Button(t("Voltar tudo da aparência ao padrão")) {
+                    let v = store.c.visual
+                    store.c.visual = CVisual(presets: v.presets, copiados: v.copiados)  // os estilos salvos e o histórico ficam
+                    store.c.aparencia.corAtencao = "#FF9F0A"; store.c.aparencia.corCritico = "#FF453A"
+                }
+            } footer: {
+                Text(t("Modo Full, estilo Clássico, destaque, densidade, anéis, números, notch, som e atalho voltam ao que vem de fábrica. Os estilos que você salvou ficam."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped)
     }
@@ -605,6 +662,7 @@ struct CampoSegredo: View {
 struct AbaIA: View {
     @ObservedObject var store: ConfigStore
     @ObservedObject var a: EstadoAjustes
+    @StateObject private var precos = Local(false)
     var body: some View {
         ListaDetalhe(itens: $store.c.ia, selecao: $a.ia, novo: { CIA(nome: t("Nova conta")) }, linha: { c in
             HStack(spacing: 8) {
@@ -616,7 +674,7 @@ struct AbaIA: View {
             }
         }, detalhe: { $c in
             Form {
-                Section(t("Conta")) {
+                Section {
                     TextField(t("Nome"), text: $c.nome)
                     TextField(t("Ferramenta"), text: $c.ferramenta, prompt: Text(verbatim: "Claude, ChatGPT, Gemini…"))
                     Picker(t("De onde vem o uso"), selection: $c.fonte) {
@@ -636,6 +694,9 @@ struct AbaIA: View {
                                                          set: { c.app = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } }),
                               prompt: Text(verbatim: "/Applications/Claude.app"))
                     Toggle(t("Mostrar na ilha"), isOn: $c.visivel)
+                } header: { Text(t("Conta")) } footer: {
+                    Text(t("Na gaveta, clique no anel da conta pra ver o uso de hoje, da semana e do mês, modelo por modelo, com o custo estimado."))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
                     Picker(t("Responder com"), selection: $c.perguntar) {
@@ -664,7 +725,9 @@ struct AbaIA: View {
                 }
                 if a.fontesIA.isEmpty { Text(t("Nada achado neste Mac")) }
             } label: { Image(systemName: "wand.and.stars") }.menuIndicator(.hidden).fixedSize().help(t("Adicionar o que foi achado neste Mac"))
+            Button(t("Preços…")) { precos.v = true }.help(t("Preços por modelo"))
         })
+        .sheet(isPresented: $precos.v) { TabelaPrecos(store: store) { precos.v = false } }
     }
 }
 

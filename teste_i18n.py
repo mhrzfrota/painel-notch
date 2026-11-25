@@ -8,7 +8,7 @@ import glob, json, os, re, sys
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 IDIOMAS = ['en', 'es', 'fr']
-SWIFT = ['FleetNotch.swift', 'Ajustes.swift', 'Assistente.swift']
+SWIFT = ['FleetNotch.swift', 'Ajustes.swift', 'Assistente.swift', 'Visual.swift']
 PY = [f for f in sorted(glob.glob(os.path.join(AQUI, '*.py'))) if not os.path.basename(f).startswith(('teste', 'sonda'))]
 
 # termos que não se traduzem (marca, sigla, unidade): um texto só com eles pode ficar cru no Swift

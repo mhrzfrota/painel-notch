@@ -51,13 +51,40 @@ def resolver(host, rede):
     curto = h.split('.')[0].lower()
     for nome, n in rede.items():
         if n['ip'] == h or (not h[:1].isdigit() and nome.lower() == curto):
-            return n
+            # apelido do ~/.ssh/config com o mesmo nome da Tailscale: o online vem da Tailscale, mas o SSH vai pelo
+            # apelido, que traz o HostName, o User, a IdentityFile e o known_hosts de lá (pelo IP nada disso vale)
+            return dict(n, ssh=h) if h.lower() in apelidos_ssh() else n
     return {'ip': h, 'online': None, 'self': False}
+
+
+SSH_CONFIG = os.path.expanduser('~/.ssh/config')
+_APELIDOS = {'mtime': None, 'nomes': frozenset()}
+
+
+def apelidos_ssh():
+    """Os apelidos sem curinga das linhas Host do ~/.ssh/config (em minúsculas, como o ssh compara), relidos só
+    quando o arquivo muda. Não segue Include nem Match: o que estiver só lá continua indo pelo IP da Tailscale."""
+    try:
+        mt = os.path.getmtime(SSH_CONFIG)
+    except OSError:
+        return frozenset()
+    if _APELIDOS['mtime'] != mt:
+        nomes = set()
+        try:
+            for linha in open(SSH_CONFIG, errors='replace'):
+                m = re.match(r'\s*host\s+(.+)', linha, re.I)  # "Host x y", não "HostName"
+                if m:
+                    nomes.update(a.lower() for a in m.group(1).split() if not any(c in a for c in '*?!'))
+        except OSError:
+            return frozenset()
+        _APELIDOS.update(mtime=mt, nomes=frozenset(nomes))
+    return _APELIDOS['nomes']
 
 
 def destino(m):
     u = m.get('usuario') or CFG.get('usuarioSSH')
-    return f"{u}@{m['ip']}" if u else m['ip']
+    alvo = m.get('ssh') or m['ip']
+    return f"{u}@{alvo}" if u else alvo
 
 
 def erro_ssh(err):
@@ -134,6 +161,20 @@ def alerta(d):
         livre, nome = cheios[0]
         return {'texto': f"{t('Disco interno') if nome == 'Interno' else nome} · {t('{0}% livre', livre)}", 'nivel': nivel_disco(livre), 'tipo': 'disco'}
     return None
+
+
+def extras(d):
+    """Pros anéis que o usuário escolhe nos Ajustes: disco do sistema (% usado) e temperatura (°C)."""
+    i = next((x for x in d['discos'] if x['nome'] == 'Interno'), (d['discos'] or [None])[0])
+    r = {'disco': 100 - pct(i['livre'], i['total'])} if i else {}
+    if d['temp'] is not None:
+        r['temp'] = round(d['temp'])
+    return r
+
+
+def niveis_extras(d):
+    x = extras(d)
+    return dict({'disco': nivel_disco(100 - x['disco'])} if 'disco' in x else {}, **({'temp': nivel_de('temp', x['temp'])} if 'temp' in x else {}))
 
 
 def detalhe(d, ip, plug):
@@ -636,8 +677,9 @@ def ciclo(n, cache_plug, pedido=False):
                           linhas=[f'⚠️ {a}' for a in alertas] + linhas(d, m['ip'], plug), nivel=nv,
                           modelo=m.get('icone') or d['modelo'], card=card(d, plug),
                           # campos estruturados pra ilha desenhar medidores em vez de texto
-                          medidas={'cpu': d['cpu'] or 0, 'gpu': d['gpu'] or 0, 'ram': pct(d['ram']['usado'], d['ram']['total']), 'carga': carga},
-                          niveis={k: nivel_de(k, v) for k, v in (('cpu', d['cpu']), ('gpu', d['gpu']), ('ram', pct(d['ram']['usado'], d['ram']['total'])))},
+                          medidas=dict({'cpu': d['cpu'] or 0, 'gpu': d['gpu'] or 0, 'ram': pct(d['ram']['usado'], d['ram']['total']), 'carga': carga}, **extras(d)),
+                          niveis=dict({k: nivel_de(k, v) for k, v in (('cpu', d['cpu']), ('gpu', d['gpu']), ('ram', pct(d['ram']['usado'], d['ram']['total'])))},
+                                      **niveis_extras(d)),
                           alerta=alerta(d), detalhe=detalhe(d, m['ip'], plug)))
     servidores = [servidor(s, d, e) for s, (d, e) in zip(srvs, rs)]
     return {'barra': f"{PONTO[pior[0]]} {pior[2]}{' ⚠️' if avisos else ''}" if pior else ('⚪️ ' + t('frota offline') if maqs else '⚪️'),

@@ -17,7 +17,7 @@ jobs:
       - name: Linux probe is POSIX sh
         run: sh -n sonda_linux.sh
       - name: Build the app with swiftc
-        run: swiftc -O -swift-version 5 -parse-as-library FleetNotch.swift Ajustes.swift Assistente.swift -o /tmp/FleetNotch
+        run: swiftc -O -swift-version 5 -parse-as-library FleetNotch.swift Ajustes.swift Assistente.swift Visual.swift -o /tmp/FleetNotch
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:

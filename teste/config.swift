@@ -19,6 +19,15 @@ struct TesteConfig {
         let r = renomear(a, n.aparelhos[a.id])
         precondition(r.nome == "Teclado do Edu" && r.detalhe == "Teclado do Edu · Bluetooth · bateria 80%" && r.icone == "", "renomear")
         precondition(renomear(a, nil).nome == "Magic Keyboard" && renomear(a, CAparelho(icone: "sf:keyboard.fill")).nome == "Magic Keyboard")
-        print("ok config: antiga abre, nomes e ícones vão e voltam, renomear troca o nome e o detalhe")
+        // 0.3: config de antes não tem visual, preços nem o bloco "copiados": abre no padrão (Full, Clássico, histórico desligado)
+        precondition(c.visual == CVisual() && c.precos.isEmpty && !c.modulos.copiados && c.modulos.ordem.last == "copiados", "0.3: padrões")
+        let ordemVelha = ##"{"modulos":{"ordem":["macs","topo"]},"visual":{"modo":"light","estilo":{"id":"neon","aneis":[{"cor":"#FF00FF"}]}},"precos":[{"modelo":"a"},{"modelo":"b","entrada":1}]}"##
+        guard let v = Config.ler(Data(ordemVelha.utf8)) else { fatalError("config 0.3 não abriu") }
+        precondition(v.modulos.ordem.prefix(2) == ["macs", "topo"] && v.modulos.ordem.contains("copiados"), "ordem: o bloco novo entra no fim")
+        precondition(v.visual.modo == "light" && v.visual.estilo.aneis.count == 3 && v.visual.estilo.aneis[0].cor == "#FF00FF" && v.visual.estilo.aneis[0].espessura == 1,
+                     "anel pela metade completa com o padrão")
+        precondition(Set(v.precos.map(\.id)).count == 2 && v.precos[1].entrada == 1 && v.precos[0].entrada == nil, "preços sem id ganham um")
+        precondition(Config.ler(try! JSONEncoder().encode(v)) == v, "0.3 ida e volta")
+        print("ok config: antiga abre, nomes e ícones vão e voltam, renomear troca o nome e o detalhe, visual e preços da 0.3")
     }
 }

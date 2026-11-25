@@ -16,7 +16,7 @@ struct AssistenteView: View {
     @ObservedObject var e: EstadoAssistente
     @ObservedObject var a: EstadoAjustes
     let concluir: (Config) -> Void
-    static var titulos: [String] { [t("Boas-vindas"), t("Macs"), t("Acesso SSH"), t("Servidores"), t("E-mail"), t("IA"), t("Agentes"), t("Pronto")] }
+    static var titulos: [String] { [t("Boas-vindas"), t("Visual"), t("Do seu jeito"), t("Macs"), t("Acesso SSH"), t("Servidores"), t("E-mail"), t("IA"), t("Agentes"), t("Pronto")] }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,26 +28,28 @@ struct AssistenteView: View {
             Group {
                 switch e.passo {
                 case 0: boasVindas
-                case 1: macs
-                case 2: ssh
-                case 3: servidores
-                case 4: email
-                case 5: ia
-                case 6: agentes
+                case 1: visual
+                case 2: extras
+                case 3: macs
+                case 4: ssh
+                case 5: servidores
+                case 6: email
+                case 7: ia
+                case 8: agentes
                 default: pronto
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(.horizontal, 36).padding(.top, 22)
             Divider()
             HStack {
                 if e.passo == 0 { SeletorIdioma(compacto: true).pickerStyle(.menu).fixedSize() }
-                if e.passo > 0 && e.passo < 7 { Button(t("Voltar")) { e.passo -= 1 } }
+                if e.passo > 0 && e.passo < 9 { Button(t("Voltar")) { e.passo -= 1 } }
                 Spacer()
-                if [3, 4, 5, 6].contains(e.passo) { Button(t("Pular")) { e.passo += 1 } }
-                Button(e.passo == 0 ? t("Começar") : e.passo == 7 ? t("Abrir a ilha") : t("Continuar")) { avancar() }
+                if [5, 6, 7, 8].contains(e.passo) { Button(t("Pular")) { e.passo += 1 } }
+                Button(e.passo == 0 ? t("Começar") : e.passo == 9 ? t("Abrir a ilha") : t("Continuar")) { avancar() }
                     .keyboardShortcut(.defaultAction)
             }.padding(16)
         }
-        .frame(width: 620, height: 520)
+        .frame(width: 660, height: 600)
         .onAppear {
             a.carregar()
             Py.rodar("ajustes", ["chave"]) { e.chave = $0 }
@@ -86,6 +88,40 @@ struct AssistenteView: View {
                 Label(t("Senhas e chaves ficam no Keychain, nunca em arquivo."), systemImage: "key")
                 Label(t("Dá pra mudar tudo depois em Ajustes (⌘,)."), systemImage: "gearshape")
             }.font(.system(size: 13))
+        }
+    }
+
+    /// Light ou Full e o estilo dos anéis, com a ilha desenhada em miniatura (o mesmo que os Ajustes › Aparência mostram).
+    var visual: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            cabecalho("paintpalette", t("Do jeito que você gosta de olhar"), t("Dá pra mudar tudo depois em Ajustes › Aparência, com prévia ao vivo."))
+            SeletorModo(modo: $e.c.visual.modo, estilo: e.c.visual.estilo)
+            Text(t("Estilo dos anéis")).font(.system(size: 13, weight: .semibold)).padding(.top, 4)
+            GaleriaPresets(v: $e.c.visual, colunas: 8)
+            HStack {
+                ColorPicker(t("Cor de destaque"), selection: Binding(get: { Color(hex: e.c.visual.destaque) }, set: { e.c.visual.destaque = $0.hex }), supportsOpacity: false)
+                Spacer()
+                Picker(t("Densidade"), selection: $e.c.visual.densidade) {
+                    Text(t("Compacta")).tag("compacta"); Text(t("Padrão")).tag("padrao"); Text(t("Arejada")).tag("arejada")
+                }.pickerStyle(.segmented).frame(width: 300)
+            }
+        }
+    }
+
+    /// O resto do gosto e o histórico do ⌘C: o opt-in vem primeiro, com a explicação de privacidade do lado do botão.
+    var extras: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            cabecalho("slider.horizontal.3", t("Do seu jeito"), t("Notch, números, som e atalho. Tudo opcional, tudo nos Ajustes depois."))
+            Form {
+                Section {
+                    Toggle(t("Guardar o histórico do que você copia (⌘C)"), isOn: $e.c.modulos.copiados)
+                } footer: {
+                    Text(t("Desligado por padrão. Ligado, fica só na memória deste Mac e some quando o app fecha; ignora senhas e o que os gerenciadores de senha marcam como sensível."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section { OpcoesVisuais(v: $e.c.visual, basico: false) }
+                Section { OpcoesAtalho(ligado: $e.c.aparencia.atalho, v: $e.c.visual) }
+            }.formStyle(.grouped).padding(.horizontal, -20)
         }
     }
 
@@ -230,8 +266,8 @@ struct AssistenteView: View {
     }
 
     func avancar() {
-        if e.passo == 7 { concluir(montar()); return }
-        e.passo += (e.passo == 1 && remotos.isEmpty) ? 2 : 1  // sem Mac remoto, não tem o que fazer no passo da chave
+        if e.passo == 9 { concluir(montar()); return }
+        e.passo += (e.passo == 3 && remotos.isEmpty) ? 2 : 1  // sem Mac remoto, não tem o que fazer no passo da chave
     }
 
     /// A config que sai do assistente: a que já existia + o que foi marcado (nada duplica).

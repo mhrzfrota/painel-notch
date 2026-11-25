@@ -87,9 +87,9 @@ struct ComIdioma<C: View>: View {
     var body: some View { conteudo().id(idioma.codigo).environment(\.locale, Locale(identifier: idioma.codigo)) }
 }
 
-struct Medidas: Decodable, Equatable { let cpu: Int; let gpu: Int; let ram: Int; let carga: Int }
+struct Medidas: Decodable, Equatable { let cpu: Int; let gpu: Int; let ram: Int; let carga: Int; var disco: Int? = nil; var temp: Int? = nil }
 struct Alerta: Decodable, Equatable { let texto: String; let nivel: Int; let tipo: String? }
-struct Niveis: Decodable, Equatable { let cpu: Int; let gpu: Int; let ram: Int }
+struct Niveis: Decodable, Equatable { let cpu: Int; let gpu: Int; let ram: Int; var disco: Int? = nil; var temp: Int? = nil }
 struct Disco: Decodable, Equatable { let nome: String; let livre: Int; let total: Int; let usado: Int }
 // o que está plugado ou pareado (sonda.py conectados()); discos = externos montados
 struct Monitor: Decodable, Equatable { let nome: String; let res: String?; let hz: Int?; let principal: Bool?; let interno: Bool? }
@@ -208,6 +208,8 @@ final class Modelo: ObservableObject {
     @Published var estado = Estado.vazio("⚪️ …")
     let acoes = Acoes()
     let pergunta = Pergunta()
+    let uso = UsoModelos()     // uso por modelo das contas de IA (modelos.py, sob demanda)
+    let copiados = Copiados()  // histórico do ⌘C (só com o módulo ligado)
     private var processo: Process?
     private var reiniciando = false
     var demo: () -> Bool = { false }
@@ -404,7 +406,12 @@ final class Acoes: ObservableObject {
 /// Paleta (docs/design.md): preto verdadeiro, branco em níveis, UMA cor de destaque (ciano = medida),
 /// âmbar/vermelho só pra estado. Nada de verde: normal não precisa de cor.
 enum Paleta {
-    static let ciano = Color(red: 0.392, green: 0.824, blue: 1.0)        // #64D2FF
+    /// O gosto que está valendo (Ajustes › Aparência): o AppDelegate troca na hora em que a config muda.
+    static var v = CVisual()
+    static var ciano: Color { Color(hex: v.destaque) }  // a cor de destaque (padrão #64D2FF)
+    static var leve: Bool { v.modo == "light" }
+    /// Densidade: o respiro entre os blocos da gaveta.
+    static var respiro: CGFloat { v.densidade == "compacta" ? 0.6 : v.densidade == "arejada" ? 1.45 : 1 }
     // atenção e crítico vêm dos Ajustes (Aparência); o padrão é o âmbar e o vermelho do sistema
     static var ambar = Color(hex: "#FF9F0A")
     static var vermelho = Color(hex: "#FF453A")
@@ -419,11 +426,21 @@ enum Paleta {
     static var secundario: Color { .white.opacity(contraste ? 0.85 : 0.66) }
     static var terciario: Color { .white.opacity(contraste ? 0.72 : 0.5) }
     static var trilho: Double { contraste ? 0.3 : 0.16 }  // trilho dos anéis (a cor da métrica bem apagada)
-    // anéis triplos (CPU fora, GPU meio, RAM dentro): cor própria discreta; âmbar/vermelho quando a métrica pede atenção
-    static let metricas = [ciano, Color(red: 0.651, green: 0.612, blue: 1.0), Color(red: 0.49, green: 0.859, blue: 0.722)]  // #64D2FF #A69CFF #7DDBB8
-    static let nomes = ["CPU", "GPU", "RAM"]
+    // anéis triplos (de fora pra dentro, as métricas escolhidas; padrão CPU, GPU, RAM): a cor do estilo; âmbar/vermelho quando
+    // a métrica pede atenção
+    static var metricas: [Color] { v.estilo.aneis.map { Color(hex: $0.cor) } }
+    static var nomes: [String] { v.metricas.map(nomeMetrica) }
     static func metrica(_ i: Int, nivel: Int) -> Color { nivel >= 1 ? estado(nivel) : metricas[i] }
     static func conta(_ nivel: Int) -> Color { nivel < 0 ? .white.opacity(0.2) : nivel == 0 ? .white.opacity(0.85) : estado(nivel) }
+    /// Anel de uma conta de IA: estado quando pede atenção; senão branco, a cor da marca ou a de destaque (estilo dos anéis).
+    static func corConta(_ c: Conta) -> Color {
+        if c.nivel != 0 { return conta(c.nivel) }
+        switch v.estilo.contas {
+        case "marca": return corMarca(c.ferramenta ?? c.rotulo)
+        case "destaque": return ciano
+        default: return conta(0)
+        }
+    }
     static let mola = Animation.spring(response: 0.4, dampingFraction: 1)
     static func estado(_ nivel: Int) -> Color { nivel >= 2 ? vermelho : ambar }
 }
@@ -460,28 +477,43 @@ struct Logo: View {
 }
 
 /// Medidor circular: trilho na própria cor bem apagada (como os anéis do Apple Watch) e arco começando ao meio-dia.
+/// Com estilo (Ajustes › Aparência › Anéis): degradê ao longo do arco, espessura, trilho, brilho e ponta. A cor de estado
+/// (âmbar/vermelho), quando vem, ganha do estilo: o que pede atenção nunca fica bonito demais pra ser visto.
 struct Anel: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let valor: Int, cor: Color, diametro: CGFloat, linha: CGFloat
+    var estilo: CAnel? = nil
     var body: some View {
+        let e = estilo, w = linha * CGFloat(e?.espessura ?? 1), frac = CGFloat(max(0, min(valor, 100))) / 100
+        let doEstilo = e != nil && cor == Color(hex: e!.cor)  // a view chamou com a cor do estilo: não é cor de estado
+        let fim = doEstilo && !(e!.cor2.isEmpty) ? Color(hex: e!.cor2) : cor
+        let trilho = Paleta.contraste ? max(e?.trilho ?? Paleta.trilho, 0.3) : (e?.trilho ?? Paleta.trilho)
+        let brilho = doEstilo && !Paleta.contraste ? CGFloat(e!.brilho) : 0
         ZStack {
-            Circle().inset(by: linha / 2).stroke(cor.opacity(Paleta.trilho), lineWidth: linha)
-            Circle().inset(by: linha / 2).trim(from: 0, to: CGFloat(max(0, min(valor, 100))) / 100)
-                .stroke(cor, style: StrokeStyle(lineWidth: linha, lineCap: .round))
+            Circle().inset(by: w / 2).stroke(cor.opacity(trilho), lineWidth: w)
+            Circle().inset(by: w / 2).trim(from: 0, to: frac)
+                .stroke(AngularGradient(colors: [cor, fim], center: .center, startAngle: .degrees(0), endAngle: .degrees(360 * Double(max(frac, 0.01)))),
+                        style: StrokeStyle(lineWidth: w, lineCap: (e?.redonda ?? true) ? .round : .butt))
                 .rotationEffect(.degrees(-90))
+                .shadow(color: brilho > 0 ? fim.opacity(0.9 * brilho) : .clear, radius: brilho * w * 1.2)
         }.frame(width: diametro, height: diametro)
     }
 }
 
 /// Anéis triplos concêntricos estilo Activity: CPU (fora), GPU (meio), RAM (dentro).
 struct Aneis: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let md: Medidas, nv: Niveis?, diametro: CGFloat, linha: CGFloat
     var body: some View {
-        let v = [md.cpu, md.gpu, md.ram], n = [nv?.cpu ?? 0, nv?.gpu ?? 0, nv?.ram ?? 0]
+        let k = Paleta.v.metricas + ["cpu", "gpu", "ram"]
         ZStack {
             ForEach(0..<3, id: \.self) { i in
-                Anel(valor: v[i], cor: Paleta.metrica(i, nivel: n[i]), diametro: diametro - CGFloat(i) * 2 * (linha + 2), linha: linha)
+                Anel(valor: md.valor(k[i]), cor: Paleta.metrica(i, nivel: nv?.valor(k[i]) ?? 0), diametro: diametro - CGFloat(i) * 2 * (linha + 2), linha: linha,
+                     estilo: Paleta.v.estilo.aneis[i])
             }
         }
+        // dica do sistema ao parar o mouse: diz qual anel é qual sem depender da legenda do rodapé
+        .help((0..<3).map { "\(nomeMetrica(k[$0])) \(md.texto(k[$0]))" }.joined(separator: " · "))
     }
 }
 
@@ -646,6 +678,7 @@ struct IlhaView: View {
         }
         .foregroundStyle(Paleta.primario)
         .environment(\.colorScheme, .dark)  // preta como o notch e a Dynamic Island nos dois modos; por dentro, sempre o esquema escuro
+        .animation(Paleta.reduzir ? .easeOut(duration: 0.15) : Paleta.mola, value: cfg.c.visual)  // Light ⇄ Full, estilo, densidade: transição suave
         .onAppear { abrirSettings = { abrirAjustes() } }  // a notificação <ID>.ajustes abre os Ajustes por aqui
     }
 
@@ -665,6 +698,8 @@ struct IlhaView: View {
                 PaginaEditar(chave: p, store: cfg, e: m.estado, voltar: voltar).id(p).padding(20).pagina(p).transition(ida)
             } else if p == "email", let x = m.estado.email {
                 PaginaEmail(x: x, voltar: voltar).padding(20).pagina(p).transition(ida).onAppear { m.pedirEmail() }
+            } else if p.hasPrefix("conta:"), let c = (m.estado.contas ?? []).first(where: { "conta:" + ($0.id ?? $0.rotulo) == p }) {
+                PaginaConta(c: c, cia: cfg.c.ia.first { $0.id == c.id }, voltar: voltar, uso: m.uso, demo: cfg.c.demo).padding(20).pagina(p).transition(ida)
             } else if p == "historico" {
                 PaginaHistorico(p: m.pergunta, voltar: voltar).padding(20).pagina(p).transition(ida)
             } else if p == "sinc", let s = m.estado.sincronizacao {
@@ -673,8 +708,8 @@ struct IlhaView: View {
                 PaginaMac(q: q, voltar: voltar, acoes: m.acoes, ilha: e, comAcoes: cfg.c.modulos.acoes, nomes: cfg.c.aparelhos, abrir: abrir)
                     .padding(20).pagina(p).transition(ida)
             } else {
-                Mostrador(e: m.estado, ilha: e, cfg: cfg.c, pergunta: m.pergunta, legenda: !legendaVista, abrir: abrir)
-                    .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 14)
+                Mostrador(e: m.estado, ilha: e, cfg: cfg.c, pergunta: m.pergunta, copiados: m.copiados, legenda: !legendaVista, abrir: abrir)
+                    .padding(.horizontal, 20).padding(.top, 14 * Paleta.respiro).padding(.bottom, 14 * Paleta.respiro)
                     .pagina("frota").transition(volta)  // a frota sai e volta pela esquerda
             }
         }
@@ -697,6 +732,7 @@ struct Mostrador: View {
     @ObservedObject var ilha: EstadoIlha
     let cfg: Config
     @ObservedObject var pergunta: Pergunta
+    @ObservedObject var copiados: Copiados
     let legenda: Bool
     let abrir: (String) -> Void
     static let cartoes: Set<String> = ["email", "orca", "sincronizacao"]
@@ -705,12 +741,13 @@ struct Mostrador: View {
         let on = e.maquinas.filter { $0.medidas != nil }, off = e.maquinas.filter { $0.medidas == nil }
         let foco = on.first { "mac:" + ($0.nome ?? "") == ilha.hover } ?? on.first  // conectados do Mac sob o mouse; senão a central
         let aps = aparelhos(foco, nomes: cfg.aparelhos)
+        let r = Paleta.respiro
         VStack(spacing: 0) {
             ForEach(Array(linhas().enumerated()), id: \.element) { i, linha in
-                bloco(linha, on: on, off: off, aps: aps, foco: foco).padding(.top, i == 0 ? 0 : linha == ["macs"] ? 4 : 12)
+                bloco(linha, on: on, off: off, aps: aps, foco: foco).padding(.top, i == 0 ? 0 : linha == ["macs"] ? 4 * r : 12 * r)
                     .modifier(Entrada(onda: i, aberta: ilha.aberta))
             }
-            legendaView(on: on, off: off, aps: aps).frame(height: 16).padding(.top, 12).modifier(Entrada(onda: 6, aberta: ilha.aberta))
+            legendaView(on: on, off: off, aps: aps).frame(height: 16).padding(.top, 12 * r).modifier(Entrada(onda: 6, aberta: ilha.aberta))
         }
         .frame(width: 584)  // + 2 × 20 de margem = 624, grade de 8
         .animation(.easeOut(duration: 0.15), value: ilha.hover)
@@ -728,29 +765,60 @@ struct Mostrador: View {
         case "orca": return cfg.modulos.orca && e.orca?.aberto == true
         case "sincronizacao": return cfg.modulos.sincronizacao && e.sincronizacao != nil
         case "pergunta": return cfg.modulos.pergunta && cfg.ia.contains { !$0.perguntar.isEmpty && $0.visivel }
+        case "copiados": return cfg.modulos.copiados
         default: return false
         }
     }
 
     /// As linhas da gaveta na ordem dos Ajustes. E-mail, Orca e Sincronização vizinhos dividem uma linha (até 3 cartões).
+    /// No Light, servidores e cartões viram ícones e vizinhos dividem uma fileira só.
     func linhas() -> [[String]] {
+        let junta = Paleta.leve ? Mostrador.cartoes.union(["servidores"]) : Mostrador.cartoes, maximo = Paleta.leve ? 4 : 3
         var r: [[String]] = []
         for b in cfg.modulos.ordem where visivel(b) {
-            if Mostrador.cartoes.contains(b), let u = r.last, u.allSatisfy(Mostrador.cartoes.contains), u.count < 3 { r[r.count - 1].append(b) } else { r.append([b]) }
+            if junta.contains(b), let u = r.last, u.allSatisfy(junta.contains), u.count < maximo { r[r.count - 1].append(b) } else { r.append([b]) }
         }
         return r
     }
 
     @ViewBuilder func bloco(_ linha: [String], on: [Maquina], off: [Maquina], aps: [Aparelho], foco: Maquina?) -> some View {
-        switch linha[0] {
+        switch linha.count == 1 ? linha[0] : "linha" {
         case "topo": topo
         case "macs": macs(on: on, off: off, aps: aps, foco: foco)
         case "servidores": servidores
         case "pergunta": BlocoPergunta(p: pergunta, contas: cfg.ia.filter { !$0.perguntar.isEmpty && $0.visivel }, uso: e.contas ?? [], abrir: abrir)
+        case "copiados": BlocoCopiados(c: copiados, luz: luz)
         default:
-            let n = CGFloat(linha.count), w = (584 - 10 * (n - 1)) / n
-            HStack(spacing: 10) {
-                ForEach(linha, id: \.self) { c in cartao(c, compacto: linha.count > 1).frame(width: w) }
+            if Paleta.leve {
+                HStack(spacing: 14) {  // no Light, cada cartão (e cada servidor) vira o ícone com o sinal
+                    ForEach(linha, id: \.self) { c in if c == "servidores" { iconesServidores } else { icone(c) } }
+                }
+            } else {
+                let n = CGFloat(linha.count), w = (584 - 10 * (n - 1)) / n
+                HStack(spacing: 10) {
+                    ForEach(linha, id: \.self) { c in cartao(c, compacto: linha.count > 1).frame(width: w) }
+                }
+            }
+        }
+    }
+
+    /// Light: e-mail, Orca e sincronização como pratos redondos; o ponto diz o estado, os números vão pra legenda no hover.
+    @ViewBuilder func icone(_ c: String) -> some View {
+        switch c {
+        case "email":
+            if let x = e.email {
+                PratoSinal(sinal: x.problema != nil ? Paleta.ambar : x.naoLidos > 0 ? Paleta.ciano : nil) { Prato(simbolo: "envelope.fill", cor: Paleta.secundario) }
+                    .opacity(luz("email")).contentShape(Rectangle()).alvo("email").onTapGesture { abrir("email") }
+            }
+        case "orca":
+            if let o = e.orca {
+                PratoSinal(sinal: (o.esperando ?? 0) > 0 ? Paleta.ciano : nil) { Image(nsImage: iconeApp("/Applications/Orca.app")).resizable().scaledToFit().padding(2) }
+                    .opacity(luz("orca")).contentShape(Rectangle()).alvo("orca").onTapGesture { abrirOrca() }
+            }
+        default:
+            if let s = e.sincronizacao {
+                PratoSinal(sinal: s.nivel >= 1 ? Paleta.ambar : nil) { SetaSinc(s: s, tamanho: 34) }
+                    .opacity(luz("sinc")).contentShape(Rectangle()).alvo("sinc").onTapGesture { abrir("sinc") }
             }
         }
     }
@@ -768,7 +836,7 @@ struct Mostrador: View {
 
     var topo: some View {
         HStack(alignment: .top, spacing: 0) {
-            if agentes.count == 1, let g = agentes.first {
+            if agentes.count == 1, let g = agentes.first, !Paleta.leve {
                 ComplicacaoAgente(g: g, foto: foto(g)).opacity(luz("agente:" + (g.id ?? g.nome)))
                     .contentShape(Rectangle()).alvo("agente:" + (g.id ?? g.nome)).onTapGesture { abrir("agente:" + (g.id ?? g.nome)) }
             } else if !agentes.isEmpty {
@@ -784,7 +852,7 @@ struct Mostrador: View {
             HStack(spacing: 12) {
                 ForEach(contas, id: \.rotulo) { c in
                     GaugeConta(c: c).opacity(luz("conta:" + c.rotulo)).contentShape(Rectangle()).alvo("conta:" + c.rotulo)
-                        .onTapGesture { if c.semLogin == true { abrirOrca() } }
+                        .onTapGesture { if c.semLogin == true { abrirOrca() } else { abrir("conta:" + (c.id ?? c.rotulo)) } }
                 }
             }
         }
@@ -815,16 +883,28 @@ struct Mostrador: View {
                 if !off.isEmpty {
                     HStack(spacing: 4) {
                         ForEach(off, id: \.nome) { q in IconeDispositivo(valor: q.modelo ?? "", tamanho: 16, prato: false).opacity(0.35) }
-                        Text(t("{0} offline", off.count)).font(.system(size: 11)).foregroundStyle(Paleta.terciario).padding(.leading, 2)
+                        if !Paleta.leve { Text(t("{0} offline", off.count)).font(.system(size: 11)).foregroundStyle(Paleta.terciario).padding(.leading, 2) }
                     }.padding(.top, 8).contentShape(Rectangle()).alvo("offline")
                 }
             }.frame(height: 48, alignment: .top).padding(.top, 16)
         }
     }
 
-    var servidores: some View {
-        let ss = e.servidores ?? []
-        return LazyVGrid(columns: Array(repeating: GridItem(.fixed(188), spacing: 10), count: 3), alignment: .leading, spacing: 10) {
+    @ViewBuilder var servidores: some View {
+        if Paleta.leve { HStack(spacing: 14) { iconesServidores }.frame(maxWidth: .infinity) } else { servidoresFull(e.servidores ?? []) }
+    }
+
+    @ViewBuilder var iconesServidores: some View {
+                ForEach(e.servidores ?? [], id: \.nome) { s in
+                    PratoSinal(sinal: !s.online ? Paleta.estado(2) : s.alerta.map { Paleta.estado($0.nivel) }) {
+                        IconeDispositivo(valor: cfg.servidores.first { $0.id == s.id }?.icone.nilSeVazio ?? "sf:server.rack", tamanho: 34)
+                    }.opacity(s.online ? luz("servidor:" + (s.id ?? s.nome)) : 0.5).contentShape(Rectangle())
+                        .alvo("servidor:" + (s.id ?? s.nome)).onTapGesture { if s.online { abrir("servidor:" + (s.id ?? s.nome)) } }
+                }
+    }
+
+    func servidoresFull(_ ss: [Servidor]) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(188), spacing: 10), count: 3), alignment: .leading, spacing: 10) {
             ForEach(ss, id: \.nome) { s in
                 TileServidor(s: s, icone: cfg.servidores.first { $0.id == s.id }?.icone ?? "").opacity(luz("servidor:" + (s.id ?? s.nome))).contentShape(Rectangle())
                     .alvo("servidor:" + (s.id ?? s.nome)).onTapGesture { if s.online { abrir("servidor:" + (s.id ?? s.nome)) } }
@@ -852,7 +932,8 @@ struct Mostrador: View {
         let (texto, cor): (String, Color) = {
             let h = ilha.hover ?? ""
             if h.hasPrefix("mac:"), let q = on.first(where: { "mac:" + ($0.nome ?? "") == h }), let md = q.medidas {
-                return ("\(q.nome ?? "")  ·  CPU \(md.cpu)%  GPU \(md.gpu)%  RAM \(md.ram)%" + (q.alerta.map { "  ·  \($0.texto)" } ?? ""),
+                let nums = Paleta.v.metricas.map { nomeMetrica($0) + " " + md.texto($0) }.joined(separator: "  ")
+                return ("\(q.nome ?? "")  ·  " + nums + (q.alerta.map { "  ·  \($0.texto)" } ?? ""),
                         q.alerta.map { Paleta.estado($0.nivel) } ?? Paleta.secundario)
             }
             if h.hasPrefix("agente:"), let g = agentes.first(where: { "agente:" + ($0.id ?? $0.nome) == h }) {
@@ -879,18 +960,19 @@ struct Mostrador: View {
                     return ("\(c.rotulo)  ·  \(c.ferramenta ?? "")  ·  " + t("sem login") + orca, Paleta.secundario)
                 }
                 return c.nivel < 0 ? ("\(c.rotulo)  ·  \(c.ferramenta ?? "")  ·  " + c.card.joined(separator: "  ·  "), Paleta.secundario)
-                    : ("\(c.rotulo)  ·  \(c.ferramenta ?? "")  ·  " + usoJanela(c) + "  ·  " + t("volta {0}", c.reset ?? "—"),
+                    : ("\(c.rotulo)  ·  \(c.ferramenta ?? "")  ·  " + usoJanela(c) + "  ·  " + t("volta {0}", c.reset ?? "—") + "  ·  " + t("clique pra ver por modelo"),
                        c.nivel >= 1 ? Paleta.estado(c.nivel) : Paleta.secundario)
             }
             if h.hasPrefix("ap:"), let a = aps.first(where: { "ap:" + $0.id == h }) { return (a.detalhe, Paleta.secundario) }
+            if h.hasPrefix("clip:"), let i = copiados.itens.first(where: { "clip:" + $0.id.uuidString == h }) { return (legendaCopiado(i), Paleta.secundario) }
             if h == "offline" { return (t("Fora do ar: {0}", off.map { $0.nome ?? "" }.joined(separator: ", ")), Paleta.secundario) }
             if legenda { return ("", Paleta.terciario) }
             let a = atencao(e)
-            guard let p = a.first else { return (t("Tudo em ordem"), Paleta.terciario) }
+            guard let p = a.first else { return (Paleta.leve ? "" : t("Tudo em ordem"), Paleta.terciario) }
             return (p.texto + (a.count > 1 ? "  ·  +\(a.count - 1)" : ""), Paleta.estado(p.nivel))
         }()
         Group {
-            if legenda && ilha.hover == nil { Legenda() } else if ilha.hover == "ap:rede", let a = aps.first(where: { $0.id == "rede" }) {
+            if legenda && ilha.hover == nil { Legenda(visual: cfg.visual) } else if ilha.hover == "ap:rede", let a = aps.first(where: { $0.id == "rede" }) {
                 LegendaRede(a: a)
             } else {
                 Text(texto).font(.system(size: 11).monospacedDigit()).foregroundStyle(cor).lineLimit(1).truncationMode(.middle)
@@ -942,12 +1024,13 @@ func usoJanela(_ c: Conta) -> String { c.janela == "5h" ? t("{0}% das 5 horas", 
 
 /// Legenda mínima: só na primeira vez que a gaveta abre (depois os números aparecem no hover).
 struct Legenda: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     var body: some View {
         HStack(spacing: 12) {
             ForEach(0..<3, id: \.self) { i in
                 HStack(spacing: 4) {
-                    Circle().fill(Paleta.metricas[i]).frame(width: 6, height: 6)
-                    Text(Paleta.nomes[i]).font(.system(size: 11, weight: .semibold)).foregroundStyle(Paleta.secundario)
+                    Circle().fill(Color(hex: visual.estilo.aneis[i].cor)).frame(width: 6, height: 6)
+                    Text(nomeMetrica(visual.metricas.indices.contains(i) ? visual.metricas[i] : "cpu")).font(.system(size: 11, weight: .semibold)).foregroundStyle(Paleta.secundario)
                 }
             }
             Text(t("anéis de fora pra dentro · passe o mouse pra ver os números")).font(.system(size: 11)).foregroundStyle(Paleta.terciario)
@@ -957,6 +1040,7 @@ struct Legenda: View {
 
 /// O Mac central: anéis grandes (CPU fora, GPU meio, RAM dentro), o desenho do aparelho dentro, selo se tiver alerta.
 struct Heroi: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let q: Maquina
     var body: some View {
         VStack(spacing: 0) {
@@ -965,14 +1049,17 @@ struct Heroi: View {
                 IconeDispositivo(valor: q.modelo ?? "", tamanho: 56)
                 if let a = q.alerta { Selo(a: a, tamanho: 24).position(x: 110, y: 110) }
             }.frame(width: 128, height: 128)
-            Text(q.nome ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(1).padding(.top, 8)
-            Numeros(v: [q.medidas!.cpu, q.medidas!.gpu, q.medidas!.ram], tamanho: 11).padding(.top, 4)
+            if !Paleta.leve {  // Light: só o mostrador; o nome e os números vêm na legenda, no hover
+                Text(q.nome ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(1).padding(.top, 8).transition(.opacity)
+                Numeros(v: Paleta.v.metricas.map { q.medidas!.valor($0) }, tamanho: 11).padding(.top, 4).transition(.opacity)
+            }
         }
     }
 }
 
 /// Mac em órbita: mesmos anéis, menores; o nome pode quebrar em duas linhas (nada de "…" no nome do Mac).
 struct Satelite: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let q: Maquina
     var body: some View {
         VStack(spacing: 0) {
@@ -981,20 +1068,24 @@ struct Satelite: View {
                 IconeDispositivo(valor: q.modelo ?? "", tamanho: 30)
                 if let a = q.alerta { Selo(a: a, tamanho: 16).position(x: 62, y: 62) }
             }.frame(width: 72, height: 72)
-            Text(q.nome ?? "").font(.system(size: 11, weight: .medium)).foregroundStyle(Paleta.secundario)
-                .multilineTextAlignment(.center).lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
-        }.padding(.top, 28)  // centro dos satélites na altura do centro do mostrador
+            if !Paleta.leve {
+                Text(q.nome ?? "").font(.system(size: 11, weight: .medium)).foregroundStyle(Paleta.secundario)
+                    .multilineTextAlignment(.center).lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.top, 8).transition(.opacity)
+            }
+        }.padding(.top, Paleta.leve ? 28 : 28)  // centro dos satélites na altura do centro do mostrador
     }
 }
 
-/// "● 9  ● 0  ● 53": o ponto colorido é a legenda do anel.
+/// "● CPU 9  ● GPU 0  ● RAM 53": o ponto colorido liga o número ao anel e o nome diz qual é (sem depender da legenda).
 struct Numeros: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let v: [Int], tamanho: CGFloat
     var body: some View {
         HStack(spacing: 8) {
             ForEach(0..<3, id: \.self) { i in
                 HStack(spacing: 3) {
                     Circle().fill(Paleta.metricas[i]).frame(width: 5, height: 5)
+                    Text(Paleta.nomes[i]).font(.system(size: tamanho - 1, weight: .semibold)).foregroundStyle(Paleta.terciario)
                     Text("\(v[i])").font(.system(size: tamanho, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(Paleta.secundario).contentTransition(.numericText(value: Double(v[i])))
                 }
@@ -1005,18 +1096,21 @@ struct Numeros: View {
 
 /// Conta de IA como complicação circular: logo da ferramenta no anel de uso, o % embaixo na cor do nível.
 struct GaugeConta: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let c: Conta
     var body: some View {
         let sem = c.nivel < 0, semLogin = c.semLogin == true
         VStack(spacing: 4) {
             ZStack {
-                Anel(valor: sem ? 0 : c.pct, cor: Paleta.conta(c.nivel), diametro: 40, linha: 3)
+                Anel(valor: sem ? 0 : c.pct, cor: Paleta.corConta(c), diametro: 40, linha: 3)
                 Logo(c: c, tamanho: 20).opacity(semLogin ? 0.4 : 1)
             }.frame(width: 40, height: 40)
-            Text(semLogin ? t("sem login") : sem ? "—" : "\(c.pct)%").font(.system(size: semLogin ? 10 : 11, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(c.nivel >= 1 ? Paleta.estado(c.nivel) : semLogin ? Paleta.terciario : Paleta.secundario).lineLimit(1)
-                .contentTransition(.numericText(value: Double(c.pct)))
-        }.frame(width: semLogin ? 56 : 48)
+            if !Paleta.leve {
+                Text(semLogin ? t("sem login") : sem ? "—" : "\(c.pct)%").font(.system(size: semLogin ? 10 : 11, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(c.nivel >= 1 ? Paleta.estado(c.nivel) : semLogin ? Paleta.terciario : Paleta.secundario).lineLimit(1)
+                    .contentTransition(.numericText(value: Double(c.pct)))
+            }
+        }.frame(width: semLogin && !Paleta.leve ? 56 : 48)
     }
 }
 
@@ -1024,6 +1118,7 @@ var avatares: [String: NSImage] = [:]
 
 /// Um agente sozinho, como complicação: a foto, o nome, os canais (o ponto é o estado) e a última coisa que aconteceu.
 struct ComplicacaoAgente: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let g: Agente, foto: String?
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1051,6 +1146,7 @@ struct ComplicacaoAgente: View {
 
 /// Vários agentes: uma fileira de fotos, como no AirDrop. Aro na cor do estado quando algo está errado; parado esmaece.
 struct AvatarAgente: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let g: Agente, foto: String?
     var body: some View {
         VStack(spacing: 4) {
@@ -1059,8 +1155,10 @@ struct AvatarAgente: View {
                 if g.nivel >= 1 { Circle().stroke(Paleta.estado(g.nivel), lineWidth: 2).frame(width: 44, height: 44) }
                 if g.nivel < 0 { Circle().stroke(Color.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [2, 2])).frame(width: 44, height: 44) }
             }.frame(width: 46, height: 46)
-            Text(g.nome).font(.system(size: 10, weight: .medium)).foregroundStyle(g.nivel >= 1 ? Paleta.estado(g.nivel) : Paleta.secundario)
-                .lineLimit(1).frame(width: 54)
+            if !Paleta.leve {
+                Text(g.nome).font(.system(size: 10, weight: .medium)).foregroundStyle(g.nivel >= 1 ? Paleta.estado(g.nivel) : Paleta.secundario)
+                    .lineLimit(1).frame(width: 54)
+            }
         }
     }
 }
@@ -1156,6 +1254,7 @@ struct CardEmail: View {
 }
 
 struct CardOrca: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let o: Orca, compacto: Bool
     var body: some View {
         let esp = o.esperando ?? 0
@@ -1311,10 +1410,11 @@ struct Canal: View {
 
 /// Vazio elegante: os três trilhos sem valor e uma frase calma (nunca uma tela preta muda).
 struct Vazio: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let texto: String
     var body: some View {
         VStack(spacing: 10) {
-            ZStack { ForEach(0..<3, id: \.self) { i in Anel(valor: 0, cor: Paleta.metricas[i], diametro: 128 - CGFloat(i) * 16, linha: 6) } }
+            ZStack { ForEach(0..<3, id: \.self) { i in Anel(valor: 0, cor: Paleta.metricas[i], diametro: 128 - CGFloat(i) * 16, linha: 6, estilo: Paleta.v.estilo.aneis[i]) } }
                 .frame(width: 128, height: 128)
             Text(texto).font(.system(size: 12)).foregroundStyle(Paleta.terciario)
         }.frame(maxWidth: .infinity).padding(.top, 8)
@@ -1347,6 +1447,7 @@ struct SetaSinc: View {
 /// O card da sincronização no mostrador: a seta; na 1ª linha o título e, à direita, o que deu errado (âmbar); na 2ª,
 /// o que está acontecendo agora (ou que está tudo em dia) e, quando o rclone conta, a barra de progresso.
 struct CardSinc: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let s: Sinc
     var compacto = false
     var progresso: Progresso? { s.rclone.first(where: { $0.progresso != nil })?.progresso }
@@ -1397,6 +1498,7 @@ struct Barra: View {
 /// Página da sincronização: o Google Drive (o que sobe, o que desce, fila e erros), cada cópia do rclone rodando e os
 /// LaunchAgents de backup (horário, última vez, ok/erro/não rodou).
 struct PaginaSinc: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let s: Sinc, voltar: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1563,6 +1665,7 @@ func aparelhosBrutos(_ q: Maquina?, rede: Bool) -> [Aparelho] {
 
 /// Aparelho na faixa de baixo, como no widget de Baterias: ícone no prato, anel de bateria quando tem, rótulo curto.
 struct Dispositivo: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let a: Aparelho
     var body: some View {
         VStack(spacing: 4) {
@@ -1571,10 +1674,12 @@ struct Dispositivo: View {
                 if let b = a.bateria { Anel(valor: b, cor: b < 10 ? Paleta.vermelho : b < 20 ? Paleta.ambar : .white.opacity(0.8), diametro: 30, linha: 2) }
                 Glifo(a: a, tamanho: 30)
             }.frame(width: 30, height: 30)
-            if let n = a.net { TaxaCompacta(net: n, local: a.local) } else {
+            if Paleta.leve {
+                EmptyView()  // Light: só o aparelho no prato; o rótulo e o tráfego vão pra legenda
+            } else if let n = a.net { TaxaCompacta(net: n, local: a.local) } else {
                 Text(a.rotulo).font(.system(size: 10).monospacedDigit()).foregroundStyle(Paleta.terciario).lineLimit(1)
             }
-        }.frame(width: a.net == nil ? 64 : 88)
+        }.frame(width: Paleta.leve ? 48 : a.net == nil ? 64 : 88)
     }
 }
 
@@ -1883,6 +1988,7 @@ struct Voltar: View {
 /// Página de um Mac: o mostrador dele, tudo que está conectado, processos, discos e sistema. Embaixo, as ações; a que
 /// apaga ou fecha alguma coisa abre um painel no lugar das colunas, com a prévia em números e o botão de 2 cliques.
 struct PaginaMac: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let q: Maquina, voltar: () -> Void
     @ObservedObject var acoes: Acoes
     @ObservedObject var ilha: EstadoIlha
@@ -1904,7 +2010,7 @@ struct PaginaMac: View {
                         BotaoEditar { abrir("editar:mac:" + (q.id ?? "")) }
                     }.padding(.top, 10)
                     Text(d?.sistema ?? "").font(.system(size: 11)).foregroundStyle(Paleta.terciario).padding(.top, 2)
-                    Numeros(v: [md.cpu, md.gpu, md.ram], tamanho: 11).padding(.top, 8)
+                    Numeros(v: Paleta.v.metricas.map { md.valor($0) }, tamanho: 11).padding(.top, 8)
                     if let a = q.alerta {
                         Text(a.texto).font(.system(size: 11)).foregroundStyle(Paleta.estado(a.nivel)).multilineTextAlignment(.center).padding(.top, 8)
                     }
@@ -2598,7 +2704,11 @@ final class NotchView: NSView {
         let ambar = Paleta.nsAmbar.cgColor, verm = Paleta.nsVermelho.cgColor
         let branco = NSColor.white.withAlphaComponent(0.7).cgColor, fraco = NSColor.white.withAlphaComponent(0.35).cgColor
         let meio = bounds.midY, d: CGFloat = 5
-        let maqs = cfg.modulos.macs ? e.maquinas : [], srvs = cfg.modulos.servidores ? e.servidores ?? [] : []
+        // notch fechado (Ajustes › Aparência): todos os sinais, só o que pede atenção, ou nenhum (o notch puro)
+        let so = cfg.visual.notch == "alertas"
+        indicadores.isHidden = cfg.visual.notch == "vazio"
+        let maqs = (cfg.modulos.macs ? e.maquinas : []).filter { !so || max($0.nivel, $0.alerta?.nivel ?? 0) >= 1 }
+        let srvs = (cfg.modulos.servidores ? e.servidores ?? [] : []).filter { !so || !$0.online || max($0.nivel, $0.alerta?.nivel ?? 0) >= 1 }
         let total = maqs.count + srvs.count
         while pontos.count < total {
             let c = CAShapeLayer()
@@ -2606,7 +2716,7 @@ final class NotchView: NSView {
             indicadores.addSublayer(c)
             pontos.append(c)
         }
-        let contas = cfg.modulos.ia ? e.contas ?? [] : []
+        let contas = (cfg.modulos.ia ? e.contas ?? [] : []).filter { !so || $0.nivel >= 1 }
         while aneis.count < contas.count {
             let r: CGFloat = 4.5, caminho = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: 2 * r, height: 2 * r), transform: nil)
             let trilho = CAShapeLayer(), arco = CAShapeLayer()
@@ -2645,11 +2755,12 @@ final class NotchView: NSView {
                 l.bounds = CGRect(x: 0, y: 0, width: 9, height: 9); l.position = CGPoint(x: x + 4.5, y: meio); l.isHidden = !ok
             }
             a.arco.strokeEnd = CGFloat(min(c?.pct ?? 0, 100)) / 100
-            a.arco.strokeColor = (c?.nivel ?? 0) >= 2 ? verm : (c?.nivel ?? 0) == 1 ? ambar : branco
+            a.arco.strokeColor = (c?.nivel ?? 0) >= 2 ? verm : (c?.nivel ?? 0) == 1 ? ambar : c.map { NSColor(Paleta.corConta($0)).withAlphaComponent(0.85).cgColor } ?? branco
         }
         // agentes: brancos = todos no ar; âmbar/vermelho = algum pede atenção; fechados (dois traços) = algum parado;
         // vazados = nenhum acessível
-        let ags = cfg.modulos.agentes ? e.agentes ?? [] : [], (nh, parada, semAcesso) = NotchView.pior(ags)
+        let todos = cfg.modulos.agentes ? e.agentes ?? [] : [], (nh, parada, semAcesso) = NotchView.pior(todos)
+        let ags = so && nh < 1 && !parada ? [] : todos
         let x0 = bounds.width - 18 - 9 - CGFloat(max(contas.count - 1, 0)) * 13 - (contas.isEmpty ? -9 : 9) - 9.4
         for (i, o) in olhos.enumerated() {
             o.isHidden = ags.isEmpty
@@ -2664,9 +2775,10 @@ final class NotchView: NSView {
         // Orca: um ponto ciano discreto à esquerda dos olhos, só quando algum agente do Orca está esperando você
         let esperando = cfg.modulos.orca && (e.orca?.esperando ?? 0) > 0
         orca.isHidden = !esperando
+        orca.fillColor = NSColor(Paleta.ciano).cgColor
         orca.position = CGPoint(x: (ags.isEmpty ? x0 + 6 : x0) - 8, y: meio)
         // sincronização: seta branca andando enquanto sobe/desce; parada e âmbar se um backup não rodou; senão, nada
-        let sc = cfg.modulos.sincronizacao ? e.sincronizacao : nil, anda = sc?.seta != nil, atencao = !anda && (sc?.nivel ?? 0) >= 1
+        let sc = cfg.modulos.sincronizacao ? e.sincronizacao : nil, anda = sc?.seta != nil && !so, atencao = sc?.seta == nil && (sc?.nivel ?? 0) >= 1
         seta.position = CGPoint(x: 18 + CGFloat(total) * (d + 4) + (srvs.isEmpty ? 0 : 3) + 5, y: meio)
         seta.isHidden = !anda && !atencao
         seta.strokeColor = atencao ? ambar : NSColor.white.withAlphaComponent(0.8).cgColor
@@ -2742,6 +2854,7 @@ final class NotchView: NSView {
 /// mesmo desenho (ponto = Mac, quadradinho = servidor, seta = sincronização, ponto ciano = Orca, olhos = agentes, anel = conta
 /// de IA). Âmbar e vermelho dizem o que está errado. Na 1ª vez que o app abre, ela aparece sozinha com uma dica.
 struct LegendaNotch: View {
+    var visual = Paleta.v  // o gosto como entrada: quem cria a view com a config nova muda a entrada, e ela redesenha
     let e: Estado, cfg: Config, dica: Bool
     var body: some View {
         let maqs = cfg.modulos.macs ? e.maquinas : [], srvs = cfg.modulos.servidores ? e.servidores ?? [] : []
@@ -2903,6 +3016,8 @@ final class Ilha {
     let area = CGSize(width: 960, height: 900)  // janela da gaveta: cabe a maior página + sombra; nunca muda de tamanho
     let jNotch = Painel(chave: false), jGaveta = Painel(chave: true), jLegenda = Painel(chave: false)
     private var legendaPendente: DispatchWorkItem?
+    private var fechando: DispatchWorkItem?
+    private var porHover = false  // aberta pelo hover: fecha sozinha quando o mouse sai
     private let nv: NotchView
     private var assinatura: AnyCancellable?
     private var observadores: [Any] = []
@@ -2926,8 +3041,7 @@ final class Ilha {
         nv = NotchView(tamanho: notch)
         nv.clique = { [weak self] in self.map { $0.mudar(!$0.estado.aberta) } }
         nv.passou = { [weak self] dentro in self?.legenda(dentro) }
-        jLegenda.contentView = NSHostingView(rootView: ComIdioma { [modelo, cfg, estado] in LegendaJanela(m: modelo, cfg: cfg, ilha: estado) })
-        jLegenda.ignoresMouseEvents = true
+        jLegenda.ignoresMouseEvents = true  // o conteúdo só existe enquanto ela aparece (escondida, redesenhava a cada dado novo)
         jLegenda.alphaValue = 0
         jNotch.contentView = nv
         // notch UM NÍVEL ACIMA da gaveta: no mesmo nível, um clique dentro da gaveta a trazia pra frente e o filete de
@@ -2978,8 +3092,22 @@ final class Ilha {
     }
 
     /// Mouse parado no notch (0,35 s) mostra a legenda embaixo dele; saiu ou clicou, ela some. Nunca com a gaveta aberta.
+    /// Com "Abrir a gaveta ao passar o mouse", o hover abre a gaveta (0,25 s) e ela fecha sozinha quando o mouse sai dela,
+    /// a não ser que a pessoa clique lá dentro (clicou = ficou).
     func legenda(_ mostrar: Bool) {
         legendaPendente?.cancel()
+        if cfg.c.visual.abrirNoHover {
+            if mostrar {
+                fechando?.cancel()
+                guard !estado.aberta else { return }
+                let w = DispatchWorkItem { [weak self] in guard let s = self, !s.estado.aberta else { return }; s.mudar(true); s.porHover = true }
+                legendaPendente = w
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: w)
+            } else if estado.aberta && porHover {
+                agendarFechar()
+            }
+            return
+        }
         guard mostrar, !estado.aberta else { esconderLegenda(); return }
         let t = DispatchWorkItem { [weak self] in self?.mostrarLegenda() }
         legendaPendente = t
@@ -2987,7 +3115,9 @@ final class Ilha {
     }
 
     func mostrarLegenda() {
-        guard !estado.aberta, let v = jLegenda.contentView else { return }
+        guard !estado.aberta else { return }
+        let v = jLegenda.contentView ?? NSHostingView(rootView: ComIdioma { [modelo, cfg, estado] in LegendaJanela(m: modelo, cfg: cfg, ilha: estado) })
+        jLegenda.contentView = v
         let s = v.fittingSize, f = tela.frame
         jLegenda.setFrame(NSRect(x: (f.midX - s.width / 2).rounded(), y: f.maxY - notch.height - 8 - s.height, width: s.width, height: s.height), display: true)
         jLegenda.orderFrontRegardless()
@@ -2998,6 +3128,7 @@ final class Ilha {
         NSAnimationContext.runAnimationGroup({ c in c.duration = Paleta.reduzir ? 0 : 0.12; jLegenda.animator().alphaValue = 0 }) { [weak self] in
             guard let s = self, s.jLegenda.alphaValue == 0 else { return }
             s.jLegenda.orderOut(nil)
+            s.jLegenda.contentView = nil
             s.estado.dica = false
         }
     }
@@ -3014,16 +3145,35 @@ final class Ilha {
     func clique(_ p: CGPoint) -> Bool {
         guard estado.aberta else { return true }
         let t = estado.tamanho
-        let dentro = abs(p.x - area.width / 2) <= t.width / 2 && p.y >= Medida.encaixe && p.y <= Medida.encaixe + t.height
-        if !dentro { mudar(false) }
+        let dentro = noCorpo(p)
+        if !dentro { mudar(false) } else { porHover = false; fechando?.cancel() }
         return !dentro
     }
 
+    func noCorpo(_ p: CGPoint) -> Bool {
+        let t = estado.tamanho
+        return abs(p.x - area.width / 2) <= t.width / 2 && p.y >= Medida.encaixe - 6 && p.y <= Medida.encaixe + t.height
+    }
+
+    func agendarFechar() {
+        fechando?.cancel()
+        let w = DispatchWorkItem { [weak self] in guard let s = self, s.porHover, s.estado.aberta else { return }; s.mudar(false) }
+        fechando = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: w)
+    }
+
     /// Hover: o alvo sob o mouse, pela geometria que o próprio SwiftUI reportou (AlvosKey).
-    func passou(_ p: CGPoint?) { estado.mouse = p }
+    func passou(_ p: CGPoint?) {
+        estado.mouse = p
+        guard porHover, estado.aberta else { return }
+        if let p = p, noCorpo(p) { fechando?.cancel() } else { agendarFechar() }
+    }
 
     func mudar(_ abrir: Bool) {
         guard abrir != estado.aberta else { return }
+        porHover = false
+        fechando?.cancel()
+        Feedback.abrir(abrir)  // som e toque, se ligados (Ajustes › Aparência)
         trafego.ligar(abrir, quem: self)  // 1 s com a gaveta aberta; fechada, o timer nem existe
         let reduzir = Paleta.reduzir  // "Reduzir movimento": sem deslizar, cross-fade curto
         // clique não carrega impulso: mola criticamente amortecida (sem quique), interrompível a qualquer instante
@@ -3100,10 +3250,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let modelo = Modelo()
     let ajustes = EstadoAjustes()
     var ilhas: [Ilha] = []
+    var itemBarra: ItemBarra?
     var assistente: NSWindow?
     var passoAssistente: ((Int) -> Void)?
     private var atalho: EventHotKeyRef?
+    private var tratadorAtalho = false
     private var obs: [AnyCancellable] = []
+    private var coletaAtual: Config?  // a parte da config que o coletor usa: só ela mudando reinicia o coletor
+    private var criticos = 0
     private var idiomaObs: AnyCancellable?
 
     var fundo: NSWindow?, faixa: NSWindow?
@@ -3136,19 +3290,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             faixa = f
         }
         aplicarCores()
+        Paleta.v = cfg.c.visual
+        coletaAtual = AppDelegate.soColeta(cfg.c)
         idiomaObs = Idioma.shared.$codigo.dropFirst().removeDuplicates().sink { [weak self] _ in
             self?.modelo.reiniciar()
             self?.assistente?.title = t("Boas-vindas")  // a tabela nova já está carregada quando o código muda
         }
-        obs = [cfg.salvo.receive(on: DispatchQueue.main).sink { [weak self] _ in
+        obs = [cfg.salvo.receive(on: DispatchQueue.main).sink { [weak self] c in
             guard let s = self else { return }
-            s.modelo.reiniciar()  // o coletor relê a config
+            let coleta = AppDelegate.soColeta(c)
+            if coleta != s.coletaAtual { s.coletaAtual = coleta; s.modelo.reiniciar() }  // o coletor relê a config (gosto não reinicia)
             s.aplicarCores()
             s.montarIlhas()
             s.ligarAtalho()
-        }]
+        },
+               // o gosto vale na hora (sem esperar a gravação): a ilha, o notch e o painel redesenham com o estilo novo
+               cfg.$c.removeDuplicates().sink { [weak self] c in
+                   Paleta.v = c.visual
+                   self?.modelo.copiados.configurar(ligado: c.modulos.copiados, demo: c.demo, c.visual.copiados)
+               },
+               // som quando aparece algo crítico novo (Ajustes › Aparência › Tocar um som…)
+               modelo.$estado.receive(on: DispatchQueue.main).sink { [weak self] e in
+                   let n = atencao(e).filter { $0.nivel >= 2 }.count
+                   if let s = self, n > s.criticos, !e.maquinas.isEmpty { Feedback.critico() }
+                   self?.criticos = n
+               }]
+        // uso por modelo: lê os registros uma vez agora, em segundo plano, pra página da conta abrir na hora
+        if !cfg.c.demo && cfg.c.modulos.ia && cfg.c.ia.contains(where: { !$0.fonte.isEmpty }) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { Py.rodar("modelos", ["--aquecer"]) { _ in } }
+        }
         montarIlhas()
         ligarAtalho()
+        itemBarra = ItemBarra(app: self)
         if !cfg.existe {
             abrirAssistente()
         } else if !UserDefaults.standard.bool(forKey: "dicaNotchVista") {
@@ -3185,7 +3358,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dc.addObserver(forName: .init(ID + ".pagina"), object: nil, queue: .main) { [weak self] n in  // abre a gaveta numa página (prints, atalhos)
             guard let i = self?.ilhas.first else { return }
             if !i.estado.aberta { i.mudar(true) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { withAnimation(Paleta.mola) { i.estado.pagina = (n.object as? String).flatMap { $0.isEmpty ? nil : $0 } } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { withAnimation(Paleta.mola) { i.estado.pagina = (n.object as? String).flatMap { $0.isEmpty || $0 == "frota" ? nil : $0 } } }
+        }
+        // prints e GIF: troca o gosto de fora ("modo=light", "estilo=neon", "notch=alertas", "copiados=1"), com a mesma animação
+        dc.addObserver(forName: .init(ID + ".visual"), object: nil, queue: .main) { [weak self] n in
+            guard let s = self, let p = (n.object as? String)?.split(separator: "=", maxSplits: 1).map(String.init), p.count == 2 else { return }
+            withAnimation(Paleta.reduzir ? nil : Paleta.mola) {
+                switch p[0] {
+                case "modo": s.cfg.c.visual.modo = p[1]
+                case "estilo": if let e = (Presets.todos + s.cfg.c.visual.presets).first(where: { $0.id == p[1] }) { s.cfg.c.visual.estilo = e }
+                case "notch": s.cfg.c.visual.notch = p[1]
+                case "densidade": s.cfg.c.visual.densidade = p[1]
+                case "copiados": s.cfg.c.modulos.copiados = p[1] == "1"
+                default: break
+                }
+            }
         }
         // teste de "troca de tela" e "despertar" sem dormir a tela (com bloqueio imediato, dormir tranca a sessão):
         // dispara as MESMAS notificações que o macOS dispara, então roda exatamente os mesmos tratadores
@@ -3193,6 +3380,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if (n.object as? String) == "telas" { NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: NSApp) }
             if (n.object as? String) == "despertar" { NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: NSWorkspace.shared) }
         }
+    }
+
+    /// A config sem o que é só da interface: se só isso mudou, o coletor não precisa reiniciar.
+    static func soColeta(_ c: Config) -> Config {
+        var x = c
+        x.visual = CVisual()
+        x.precos = []
+        x.aparencia.corAtencao = ""; x.aparencia.corCritico = ""; x.aparencia.ilha = true; x.aparencia.todasTelas = false; x.aparencia.atalho = false
+        x.modulos.copiados = false; x.modulos.ordem = []; x.modulos.acoes = true; x.modulos.pergunta = true
+        x.aparelhos = [:]
+        return x
+    }
+
+    /// Abre a ilha (da barra de menus): numa página ("mac:<nome>", "conta:<id>"…) ou na frota.
+    func abrirPagina(_ p: String?) {
+        guard let i = ilhas.first else { return }
+        if !i.estado.aberta { i.mudar(true) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (p == nil ? 0 : 0.35)) { withAnimation(Paleta.reduzir ? nil : Paleta.mola) { i.estado.pagina = p } }
     }
 
     func aplicarCores() {
@@ -3218,27 +3423,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ilhas = novas
     }
 
-    /// Atalho global opcional (⌃⌥Espaço): abre a gaveta com o cursor no campo da pergunta rápida. Carbon: não pede
-    /// permissão de Acessibilidade.
+    /// Atalho global opcional (Ajustes › Geral: as teclas e o que faz): abre a gaveta com o cursor na pergunta rápida, ou
+    /// abre e fecha a gaveta. Carbon: não pede permissão de Acessibilidade.
     func ligarAtalho() {
         if let a = atalho { UnregisterEventHotKey(a); atalho = nil }
-        guard cfg.c.aparencia.atalho, cfg.c.modulos.pergunta else { return }
+        let v = cfg.c.visual, gaveta = v.atalhoAcao == "gaveta"
+        guard cfg.c.aparencia.atalho, gaveta || cfg.c.modulos.pergunta else { return }
         atalhoGlobal = { [weak self] in
             guard let s = self, let i = s.ilhas.first else { return }
+            if gaveta { i.mudar(!i.estado.aberta); return }
             if !i.estado.aberta { i.mudar(true) }
             i.estado.pagina = nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { s.modelo.pergunta.foco = true }
         }
-        var tipo = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in DispatchQueue.main.async { atalhoGlobal() }; return noErr }, 1, &tipo, nil, nil)
-        RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), EventHotKeyID(signature: OSType(0x46524F54), id: 1),
-                            GetApplicationEventTarget(), 0, &atalho)
+        if !tratadorAtalho {  // um tratador só (instalar de novo a cada gravação dispararia o atalho 2×)
+            var tipo = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in DispatchQueue.main.async { atalhoGlobal() }; return noErr }, 1, &tipo, nil, nil)
+            tratadorAtalho = true
+        }
+        let o = Atalhos.opcoes.first { $0.id == v.atalhoTecla } ?? Atalhos.opcoes[0]
+        RegisterEventHotKey(UInt32(o.tecla), UInt32(o.mods), EventHotKeyID(signature: OSType(0x46524F54), id: 1), GetApplicationEventTarget(), 0, &atalho)
     }
 
     /// O assistente (1ª execução, ou pelos Ajustes): parte da config de agora e grava a que sair dele.
     func abrirAssistente() {
         if let j = assistente, j.isVisible { praFrente(j); return }
-        let j = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 520), styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        let j = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 600), styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         j.title = t("Boas-vindas")
         j.titlebarAppearsTransparent = true
         j.isReleasedWhenClosed = false
@@ -3257,77 +3467,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-struct Conteudo: View {
-    @ObservedObject var m: Modelo
-    @ObservedObject var cfg: ConfigStore
-    let app: AppDelegate
-    @Environment(\.openSettings) private var abrirAjustes
-    var body: some View {
-        ForEach(Array(m.estado.maquinas.enumerated()), id: \.offset) { _, maq in
-            Menu(maq.titulo) {
-                ForEach(Array(maq.linhas.enumerated()), id: \.offset) { _, l in
-                    if l == "—" { Divider() } else { Button(l) {} }
-                }
-            }
-        }
-        if let ss = m.estado.servidores, !ss.isEmpty {
-            Divider()
-            ForEach(Array(ss.enumerated()), id: \.offset) { _, s in
-                Button(Self.linhaServidor(s)) {}
-            }
-        }
-        if let contas = m.estado.contas, !contas.isEmpty {
-            Divider()
-            ForEach(Array(contas.enumerated()), id: \.offset) { _, c in
-                Button("\(["⚪️", "🟢", "🟠", "🔴"][max(-1, min(c.nivel, 2)) + 1]) \(c.rotulo) — \(c.card.joined(separator: " · "))") {}
-            }
-        }
-        if let s = m.estado.sincronizacao {
-            Divider()
-            Button((s.seta == nil ? (s.nivel >= 1 ? "🟠" : "⚪️") : s.seta == "desce" ? "⬇︎" : "⬆︎") + " " + t("Sincronização") + " — " + s.resumo) {}
-        }
-        Divider()
-        if let u = m.estado.painel, let url = URL(string: u) {
-            Button(t("Abrir painel completo")) { NSWorkspace.shared.open(url) }
-        } else if !cfg.c.painel.isEmpty {
-            Text(t("Painel completo fora do ar"))
-        }
-        Toggle(t("Ilha no topo da tela"), isOn: $cfg.c.aparencia.ilha)
-        Toggle(t("Ilha em todos os monitores"), isOn: $cfg.c.aparencia.todasTelas)
-        Button(t("Ajustes…")) { abrirSettings = { abrirAjustes() }; abrirAjustesGlobal() }.keyboardShortcut(",")
-        Button(t("Assistente de configuração…")) { app.abrirAssistente() }
-        Text(t("Atualizado às {0}", m.estado.atualizado ?? "—") + (cfg.c.demo ? " · " + t("demonstração") : ""))
-        Button(t("Sair")) { NSApp.terminate(nil) }.keyboardShortcut("q")
-    }
-}
-
-extension Conteudo {
-    /// Fora do body: com a concatenação inline o type-checker do Swift 6.1 (Command Line Tools mais antigas) estourava o tempo.
-    static func linhaServidor(_ s: Servidor) -> String {
-        let nivel: Int = s.online ? max(0, min(max(s.nivel, s.alerta?.nivel ?? 0), 2)) + 1 : 0
-        let p: String = ["⚪️", "🟢", "🟠", "🔴"][nivel]
-        var corpo: String = s.erro ?? t("fora do ar")
-        if let md = s.medidas { corpo = "CPU \(md.cpu)% · RAM \(md.ram)% · " + t("disco {0}%", md.disco) }
-        let alerta: String = s.alerta.map { " · \($0.texto)" } ?? ""
-        return "\(p) \(s.nome) — " + corpo + alerta
-    }
-}
-
 /// Tela principal com notch físico (MacBook): o que não cabe à direita do notch o macOS simplesmente não desenha.
 var telaComNotch: Bool { (NSScreen.screens.first?.safeAreaInsets.top ?? 0) > 0 }
 
-struct Rotulo: View {
-    @ObservedObject var m: Modelo
-    @AppStorage("barraTexto") private var barraTexto = "auto"  // auto | texto | icone
-    var body: some View {
-        // monocromático como os itens da Apple na barra: símbolo + o Mac mais exigido; ⚠︎ em texto (sem emoji colorido).
-        // Em Mac com notch, no automático, só o símbolo: com texto o item não cabia e sumia (MacBook Air com a barra cheia).
-        let soIcone = barraTexto == "icone" || (barraTexto == "auto" && telaComNotch)
-        HStack(spacing: 4) {
-            Image(systemName: "gauge.with.dots.needle.33percent")
-            if !soIcone { Text((m.estado.pico ?? "…").replacingOccurrences(of: "⚠️", with: "⚠︎")) }
-        }
-    }
+/// O texto do item da barra: monocromático como os itens da Apple (símbolo + o Mac mais exigido; ⚠︎ em texto, sem emoji
+/// colorido). Em Mac com notch, no automático, só o símbolo: com texto o item não cabia e sumia (MacBook Air com a barra cheia).
+func rotuloBarra(_ e: Estado) -> String {
+    let modo = UserDefaults.standard.string(forKey: "barraTexto") ?? "auto"  // auto | texto | icone
+    let soIcone = modo == "icone" || (modo == "auto" && telaComNotch)
+    return soIcone ? "" : " " + (e.pico ?? "…").replacingOccurrences(of: "⚠️", with: "⚠︎")
 }
 
 #if !TESTE  // teste/config.sh compila o app com -D TESTE e o @main dele
@@ -3337,11 +3485,8 @@ struct FleetNotch: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var app
 
     var body: some Scene {
-        MenuBarExtra {
-            ComIdioma { Conteudo(m: app.modelo, cfg: app.cfg, app: app) }
-        } label: {
-            ComIdioma { Rotulo(m: app.modelo) }
-        }
+        // o item da barra de menus é nosso (ItemBarra, no AppDelegate): o MenuBarExtra em janela parava de abrir depois que
+        // os Ajustes apareciam uma vez
         Settings {
             ComIdioma { AjustesView(store: app.cfg, a: app.ajustes, assistente: { app.abrirAssistente() }, modelo: app.modelo) }
         }

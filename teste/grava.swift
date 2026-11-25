@@ -55,8 +55,10 @@ Task {
             _ = CGMainDisplayID()  // inicializa a sessão do CoreGraphics (sem isso o filtro de janela aborta)
             let c = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             let t = a[3]
-            guard let w = c.windows.first(where: { ($0.owningApplication?.bundleIdentifier ?? "").hasPrefix(prefixo) && $0.windowLayer == 0
-                                                   && (t == "*" || ($0.title ?? "").contains(t)) }) else { print("erro: janela não achada"); sem.signal(); return }
+            // "@pedaço": qualquer camada (o painel da barra de menus não fica na camada 0)
+            let qualquer = t.hasPrefix("@"), p = qualquer ? String(t.dropFirst()) : t
+            guard let w = c.windows.first(where: { ($0.owningApplication?.bundleIdentifier ?? "").hasPrefix(prefixo) && (qualquer || $0.windowLayer == 0)
+                                                   && (p == "*" || ($0.title ?? "").contains(p)) }) else { print("erro: janela não achada"); sem.signal(); return }
             let cf = SCStreamConfiguration()
             cf.width = Int(w.frame.width); cf.height = Int(w.frame.height)
             cf.ignoreShadowsSingleWindow = false

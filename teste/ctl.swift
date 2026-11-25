@@ -5,8 +5,11 @@ import CoreGraphics
 import Foundation
 
 func post(_ t: CGEventType, _ x: Double, _ y: Double) {
-    CGEvent(mouseEventSource: nil, mouseType: t, mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: t == .rightMouseDown || t == .rightMouseUp ? .right : .left)?
-        .post(tap: .cghidEventTap)
+    let e = CGEvent(mouseEventSource: nil, mouseType: t, mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: t == .rightMouseDown || t == .rightMouseUp ? .right : .left)
+    // clique de verdade tem clickCount 1 (sem isso um NSButton, como o ícone da barra de menus, ignora o clique)
+    if t != .mouseMoved { e?.setIntegerValueField(.mouseEventClickState, value: 1) }
+    e?.flags = []  // sem modificador herdado: depois de um ⌘W sintético o clique saía como ⌘-clique (no ícone da barra, = arrastar)
+    e?.post(tap: .cghidEventTap)
 }
 
 var a = Array(CommandLine.arguments.dropFirst())

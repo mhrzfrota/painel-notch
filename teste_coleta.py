@@ -197,6 +197,20 @@ assert coleta.resolver('192.0.2.2', rede)['ip'] == '192.0.2.2' and coleta.resolv
 assert coleta.resolver('vps.example.com', rede) == {'ip': 'vps.example.com', 'online': None, 'self': False}
 assert coleta.destino({'ip': 'vps', 'usuario': 'root'}) == 'root@vps' and coleta.destino({'ip': 'vps', 'usuario': ''}) in ('vps', f"{coleta.CFG.get('usuarioSSH')}@vps")
 print('ok resolver')
+# apelido do ~/.ssh/config com o mesmo nome da Tailscale: online da Tailscale, SSH pelo apelido (chave/usuário/known_hosts)
+cfg_ssh = os.path.join(tempfile.mkdtemp(), 'config')
+open(cfg_ssh, 'w').write('Host studio mini\n    HostName mini.tail1234.ts.net\n    User eu\nHost *.ts.net\n    IdentitiesOnly yes\n')
+SSH_CONFIG_ORIG, coleta.SSH_CONFIG = coleta.SSH_CONFIG, cfg_ssh
+assert coleta.apelidos_ssh() == {'studio', 'mini'}  # curinga e HostName ficam de fora
+r = coleta.resolver('mini', rede)
+assert r['ip'] == '192.0.2.2' and r['online'] is False and r['ssh'] == 'mini' and coleta.destino(dict(r, usuario='')) in ('mini', f"{coleta.CFG.get('usuarioSSH')}@mini")
+assert 'ssh' not in coleta.resolver('192.0.2.2', rede)  # IP digitado continua indo pelo IP
+open(cfg_ssh, 'w').write('Host outro\n'); os.utime(cfg_ssh, (1, 1))  # mudou o arquivo: relê
+assert coleta.apelidos_ssh() == {'outro'} and 'ssh' not in coleta.resolver('mini', rede)
+coleta.SSH_CONFIG = '/nao/existe'
+assert coleta.apelidos_ssh() == frozenset() and coleta.resolver('mini', rede) == rede['mini']
+coleta.SSH_CONFIG = SSH_CONFIG_ORIG
+print('ok apelido ssh')
 
 # servidor Linux: disco, serviço parado e container doente viram alerta; container parado de propósito não
 L = {'so': 'Ubuntu 24.04', 'kernel': '6.8', 'host': 'web', 'nucleos': 4, 'uptime': 90000, 'carga': [0.5, 0.4, 0.3], 'cpu': 12,
@@ -508,3 +522,60 @@ store.gravar()
             assert ('cplMax' in depois) == ('cplMax' in antes)
         assert salvo['agentes'][-1]['sites'] == [] and salvo['agentes'][-1]['dias'] == 1
     print('ok persistência Swift (config antiga e quatro adaptadores)')
+
+# (os registros reais são JSON compacto, sem espaço depois de ':')
+# uso por modelo (modelos.py): Claude com a mesma resposta em 2 linhas (conta 1×), modo rápido, cache 5 min × 1 h,
+# Codex com token_usage_record (e o token_count repetido ignorado), leitura incremental e preço pelo prefixo mais longo
+import modelos
+raiz = tempfile.mkdtemp()
+modelos.ARQ = os.path.join(raiz, 'cache.json')
+modelos.CACHE = raiz
+cl, cx = os.path.join(raiz, 'projects', 'p'), os.path.join(raiz, 'sessions', '2026')
+os.makedirs(cl); os.makedirs(cx)
+ts = time.strftime('%Y-%m-%dT%H:%M:00.000Z', time.gmtime())
+
+
+def resp(mid, modelo, ent, sai, lido=0, w5=0, w1=0, fast=False):
+    u = {'input_tokens': ent, 'cache_creation_input_tokens': w5 + w1, 'cache_read_input_tokens': lido, 'output_tokens': sai,
+         'cache_creation': {'ephemeral_5m_input_tokens': w5, 'ephemeral_1h_input_tokens': w1}, 'speed': 'fast' if fast else 'standard'}
+    return json.dumps({'parentUuid': None, 'message': {'model': modelo, 'id': mid, 'role': 'assistant', 'content': [{'type': 'text', 'text': '"usage":{ no texto'}],
+                       'usage': u}, 'requestId': 'r' + mid, 'type': 'assistant', 'timestamp': ts}, separators=(',', ':')) + '\n'
+
+
+import json
+arq = os.path.join(cl, 's.jsonl')
+with open(arq, 'w') as fh:
+    fh.write(resp('m1', 'claude-opus-5-5', 10, 1000, lido=1_000_000, w5=100_000) + resp('m1', 'claude-opus-5-5', 10, 1000, lido=1_000_000, w5=100_000))
+    fh.write(json.dumps({'type': 'user', 'message': {'content': 'x'}, 'toolUseResult': {'usage': {'output_tokens': 999}}}, separators=(',', ':')) + '\n')  # usage de subagente: não conta
+    fh.write(resp('m2', 'claude-sonnet-4-5-20250929', 0, 0, w1=1_000_000) + resp('m3', 'claude-opus-5-5', 1000, 0, fast=True))
+    fh.write(resp('m4', '<synthetic>', 0, 0) + '{"type":"assistant","message":{"usage":{')  # linha pela metade: fica pra próxima
+cod = [{'type': 'turn_context', 'payload': {'model': 'gpt-6.2-sol'}},
+       {'type': 'token_usage_record', 'payload': {'response_id': 'a', 'usage': {'input_tokens': 500, 'cached_input_tokens': 400, 'output_tokens': 7}}},
+       {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {'last_token_usage': {'input_tokens': 500, 'output_tokens': 7}}}}]
+with open(os.path.join(cx, 'r.jsonl'), 'w') as fh:
+    fh.write(''.join(json.dumps(dict(x, timestamp=ts), separators=(',', ':')) + '\n' for x in cod))
+modelos.fontes = lambda c: ('claude', [os.path.realpath(os.path.join(raiz, 'projects'))]) if c['fonte'] == 'claude-perfil' \
+    else ('codex', [os.path.realpath(os.path.join(raiz, 'sessions'))])
+cfg = {'ia': [{'id': 'a', 'nome': 'Lia', 'fonte': 'claude-perfil'}, {'id': 'b', 'nome': 'Bia', 'fonte': 'claude-perfil'},
+              {'id': 'g', 'nome': 'GPT', 'fonte': 'codex-sessoes'}]}
+r = modelos.resumo(cfg['ia'][0], cfg)
+h = {m['id']: m for m in r['janelas']['hoje']['modelos']}
+assert set(h) == {'claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'claude-opus-5-5|fast'}, h
+o = h['claude-opus-5-5']
+assert (o['entrada'], o['saida'], o['cacheLe'], o['cacheEscreve'], o['respostas']) == (10, 1000, 1_000_000, 100_000, 1), o
+assert abs(o['custo'] - (10 * 4 + 1000 * 20 + 1_000_000 * 0.2 + 100_000 * 5) / 1e6) < 1e-4  # (custo sai com 4 casas)
+assert abs(h['claude-sonnet-4-5-20250929']['custo'] - 6.0) < 1e-6 and h['claude-sonnet-4-5-20250929']['nome'] == 'Sonnet 4.5'  # 1 h: 2× a entrada
+assert abs(h['claude-opus-5-5|fast']['custo'] - 1000 * 8 / 1e6) < 1e-9 and h['claude-opus-5-5|fast']['nome'] == 'Opus 5.5 · fast'
+assert r['compartilhado'] == ['Bia'] and r['janelas']['mes']['semPreco'] == []
+with open(arq, 'a') as fh:  # a linha pela metade termina e conta; o que já foi lido não conta de novo
+    fh.write('"input_tokens":5,"output_tokens":5}},"id":"m5","model":"claude-haiku-5-5","timestamp":"' + ts + '"}\n')
+r2 = modelos.resumo(cfg['ia'][0], cfg)['janelas']['hoje']
+assert {m['id']: m['respostas'] for m in r2['modelos']} == {'claude-opus-5-5': 1, 'claude-sonnet-4-5-20250929': 1, 'claude-opus-5-5|fast': 1, 'claude-haiku-5-5': 1}, r2
+assert modelos.resumo(cfg['ia'][0], cfg)['janelas']['hoje'] == r2  # nada novo: o mesmo resultado, sem reler
+g = modelos.resumo(cfg['ia'][2], cfg)['janelas']['7d']
+assert [(m['nome'], m['entrada'], m['cacheLe'], m['saida'], m['custo']) for m in g['modelos']] == [('GPT-6.2 Sol', 100, 400, 7, None)], g
+assert g['semPreco'] == ['GPT-6.2 Sol']
+assert modelos.nome('gpt-6.1-terra') == 'GPT-6.1 Terra' and modelos.nome('claude-fable-5-2') == 'Fable 5.2'
+assert modelos.preco('claude-opus-5-5', modelos.PRECOS)['entrada'] == 4 and modelos.preco('claude-opus-5', modelos.PRECOS)['entrada'] == 5
+assert modelos.demo()['janelas']['7d']['custo'] > 0
+print('ok modelos')

@@ -14,8 +14,8 @@ ROT=$(sed -n "s/^ROT=//p" "$REPO/install.sh"); export PREFIXO=$ROT
 swiftc -O "$REPO/teste/ctl.swift" -o ctl && swiftc -O "$REPO/teste/grava.swift" -o grava || exit 1
 APP=$OUT/FleetNotchTeste.app
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -swift-version 5 -parse-as-library "$REPO/FleetNotch.swift" "$REPO/Ajustes.swift" "$REPO/Assistente.swift" -o "$APP/Contents/MacOS/FleetNotch" || exit 1
-cp "$REPO"/{coleta,comum,agentes,caixas,ajustes,pergunta,demo,acoes,sonda}.py "$REPO/sonda_linux.sh" "$APP/Contents/Resources/"
+swiftc -O -swift-version 5 -parse-as-library "$REPO/FleetNotch.swift" "$REPO/Ajustes.swift" "$REPO/Assistente.swift" "$REPO/Visual.swift" -o "$APP/Contents/MacOS/FleetNotch" || exit 1
+cp "$REPO"/{coleta,comum,agentes,caixas,ajustes,pergunta,demo,acoes,modelos,sonda}.py "$REPO/sonda_linux.sh" "$APP/Contents/Resources/"
 python3 "$REPO/demo.py" --config > demo-config.json   # dados que mudam a cada 5 s (demo.py), nada do usuário
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $ROT.teste" -c "Add :CFBundleName string FleetNotchTeste" \
   -c "Add :CFBundleExecutable string FleetNotch" -c "Add :LSUIElement bool true" "$APP/Contents/Info.plist" >/dev/null
